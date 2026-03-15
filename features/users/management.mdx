@@ -1,0 +1,151 @@
+---
+title: "User management"
+description: "How administrators register, list, edit, and deactivate user accounts in the SIUT-ITSM admin portal."
+---
+
+The user management section of the admin portal lives under `/portal/usuarios/`. All pages in this section are protected by the `auth` middleware — any unauthenticated request is redirected to the login page.
+
+## User listing
+
+**URL:** `/portal/usuarios/listado.php`  
+**Template:** `listado.latte`
+
+Calls `UserRepositoryInterface::listado()` and passes the result to the Latte template as the `$usuarios` variable. The listing shows all users regardless of active status.
+
+## Registering a new user
+
+**URL:** `/portal/usuarios/registrar.php`  
+**Template:** `registrar.latte`  
+**Use case:** `CreateUserUseCase`
+
+`CreateUserUseCase::execute(CreateUser $dto)` is responsible for creating a new account. It:
+
+1. Hashes the plain-text password with `password_hash($dto->password, PASSWORD_DEFAULT)`.
+2. Constructs a `User` domain entity composed of three value objects:
+   - `PersonalInfo` — name, surnames, CURP, birthdate, address, phone, photo path
+   - `BankingData` — bank name, interbank code, bank account number
+   - `WorkData` — category, department, NSS, salary, work start date
+3. Persists the entity via `UserRepositoryInterface::save()`.
+
+On success, the admin is redirected to `/portal/usuarios/listado.php?created=1`.
+
+### Registration form fields
+
+The following fields are accepted by `registrar.php`. Required fields are validated server-side before `CreateUserUseCase` is invoked.
+
+**Identity & access**
+
+| Field              | Required | Validation rule                                      |
+| ------------------ | -------- | ---------------------------------------------------- |
+| `name`             | Yes      | Non-empty string                                     |
+| `surnames`         | Yes      | Non-empty string                                     |
+| `email`            | Yes      | Valid email format; must not already exist           |
+| `password`         | Yes      | At least 6 characters                               |
+| `password_confirm` | Yes      | Must match `password`                               |
+| `role`             | Yes      | Must be a valid `RoleEnum` value                    |
+
+**Personal info** (optional)
+
+| Field        | Description              |
+| ------------ | ------------------------ |
+| `curp`       | CURP (up to 20 chars)    |
+| `birthdate`  | ISO date `YYYY-MM-DD`    |
+| `phone`      | Contact phone number     |
+| `address`    | Home address             |
+
+**Labor data** (optional)
+
+| Field             | Description                        |
+| ----------------- | ---------------------------------- |
+| `nss`             | Social Security Number (NSS)       |
+| `department`      | Department name                    |
+| `category`        | Job category                       |
+| `salary`          | Monthly salary (decimal, ≥ 0)      |
+| `work_start_date` | Employment start date `YYYY-MM-DD` |
+
+<Note>
+  Banking data (`bank_name`, `interbank_code`, `bank_account`) is not part of the registration form. Users or admins fill it in later through the profile edit view.
+</Note>
+
+## Viewing a user's detail
+
+**URL:** `/portal/usuarios/detalle.php?id=<user_id>`  
+**Template:** `detalle.latte`
+
+Loads the full `User` entity via `UserRepositoryInterface::findById()`. In addition to all profile fields, the page resolves the user's uploaded documents using `UserRepositoryInterface::findDocumentsByUserId()` and `DocumentHelper::resolveDocumentFieldsByRole()` to render only the document types applicable to that user's role.
+
+## Editing a user
+
+**URL:** `/portal/usuarios/editar.php?id=<user_id>`  
+**Template:** `editar.latte`
+
+Admins can update the following fields:
+
+- `name`, `surnames`, `email`, `role`, `active` (boolean)
+- `curp`, `birthdate`, `address`, `phone`
+- `department`, `category`, `nss`, `salary`, `work_start_date`
+
+The form POSTs to the same URL. After validation it calls `UserRepositoryInterface::updateByAdmin()` and redirects to `detalle.php?id=<id>&updated=1`.
+
+<Warning>
+  Changing a user's `role` has immediate effect on which document types are visible in their profile and which dashboard variant they see at next login.
+</Warning>
+
+## Deactivating a user
+
+**URL:** `/portal/usuarios/desactivar.php` (POST only)  
+
+Accepts a `POST` request with field `id`. Calls `UserRepositoryInterface::deactivate($id)`, which sets `active = false` in the database. Deactivated users cannot log in — `UserCredential::verifyPassword()` returns `false` when `isActive` is `false`.
+
+Redirects to `listado.php?deactivated=1` on completion.
+
+## Exporting a credential PDF
+
+**URL:** `/portal/usuarios/pdf.php`
+
+Generates a PDF listing all active users. The page:
+
+1. Calls `UserRepositoryInterface::listado(onlyActive: true)` to fetch active users.
+2. Renders `pdf.latte` to an HTML string using the `RendererInterface`.
+3. Passes the HTML to `Dompdf` for PDF rendering.
+4. Streams the result to the browser as `usuarios-activos.pdf` (force-download).
+
+The PDF uses the union's primary color (fetched via `GetColorUseCase`) and dynamically computes an accessible foreground text color (WCAG luminance contrast).
+
+## `users` table structure
+
+For reference, the full `users` table schema:
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    user_id         INT AUTO_INCREMENT PRIMARY KEY,
+    -- auth
+    email           VARCHAR(100) NOT NULL UNIQUE,
+    password_hash   VARCHAR(255) NOT NULL,
+    role            VARCHAR(20)  NOT NULL DEFAULT 'no_agremiado',
+    active          BOOLEAN               DEFAULT TRUE,
+    -- personal info
+    curp            VARCHAR(20),
+    name            VARCHAR(100) NOT NULL,
+    surnames        VARCHAR(255) NOT NULL,
+    birthdate       DATE                  DEFAULT NULL,
+    address         VARCHAR(255),
+    phone           VARCHAR(50),
+    photo           VARCHAR(255),
+    -- banking data
+    bank_name       VARCHAR(100),
+    interbank_code  VARCHAR(18),
+    bank_account    VARCHAR(20),
+    -- labor data
+    category        VARCHAR(100),
+    department      VARCHAR(100),
+    nss             VARCHAR(15),
+    salary          DECIMAL(12, 2)        DEFAULT 0,
+    work_start_date DATE                  DEFAULT NULL,
+    -- session
+    last_entry      DATETIME              DEFAULT NULL,
+    created_at      DATETIME              DEFAULT CURRENT_TIMESTAMP,
+    update_at       DATETIME              DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    delete_at       DATETIME              DEFAULT NULL
+);
+```

@@ -1,0 +1,296 @@
+---
+title: "Module system"
+description: "How SIUT-ITSM modules are structured, what ModuleInterface and AbstractModule provide, and a reference for every registered module."
+---
+
+## Overview
+
+Every feature area of SIUT-ITSM is packaged as a **module**. A module is a class that implements `ModuleInterface` and is responsible for registering its own dependency-injection bindings. `Bootstrap::buildContainer()` iterates over the module list and calls `register()` on each one before building the container.
+
+---
+
+## ModuleInterface
+
+```php
+// app/Modules/ModuleInterface.php
+namespace App\Modules;
+
+use DI\ContainerBuilder;
+
+interface ModuleInterface
+{
+    public function register(ContainerBuilder $container): void;
+}
+```
+
+A module must implement a single method: `register(ContainerBuilder $container)`. All it needs to do is call `$container->addDefinitions([…])` with whatever bindings the module needs.
+
+---
+
+## AbstractModule
+
+Most modules extend `AbstractModule`, which provides a declarative registration pattern using three class-constant arrays:
+
+```php
+// app/Modules/AbstractModule.php
+abstract class AbstractModule implements ModuleInterface
+{
+    /** @var array<class-string, class-string>  Interface => Implementation */
+    protected const array REPOSITORIES = [];
+
+    /** @var array<class-string>  Autowired services */
+    protected const array SERVICES = [];
+
+    /** @var array<class-string>  Autowired use cases */
+    protected const array USE_CASES = [];
+
+    public function register(ContainerBuilder $container): void
+    {
+        $definitions = [];
+
+        foreach (static::SERVICES as $service) {
+            $definitions[$service] = autowire();
+        }
+
+        foreach (static::USE_CASES as $useCase) {
+            $definitions[$useCase] = autowire();
+        }
+
+        foreach (static::REPOSITORIES as $interface => $implementation) {
+            $definitions[$interface] = autowire($implementation);
+        }
+
+        $container->addDefinitions($definitions);
+    }
+}
+```
+
+By declaring entries in these three constants, a module sub-class registers itself without writing any DI boilerplate:
+
+- **`REPOSITORIES`** — maps repository interfaces to their PDO implementations. PHP-DI will resolve the interface to the concrete class.
+- **`SERVICES`** — domain or application services that should be autowired.
+- **`USE_CASES`** — use case classes that should be autowired.
+
+---
+
+## Registered modules
+
+The following modules are registered in `Bootstrap::buildContainer()` in this order:
+
+```php
+$modules = [
+    new AuthModule(),
+    new MessagingModule(),
+    new PublicationModule(),
+    new SettingModule(),
+    new UserModule(),
+];
+```
+
+<Note>
+  `LoanModule` exists in the codebase but is **not** registered in Bootstrap. Its domain and application layers are used directly by portal pages via manual PDO queries or direct class instantiation until the module is fully wired.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Auth" icon="lock">
+    Handles login, logout, password reset, and magic-link recovery. Tracks all authentication events in `auth_logs`.
+  </Card>
+  <Card title="User" icon="user">
+    User creation from the portal and CSV import. Manages the `users` table and related document uploads.
+  </Card>
+  <Card title="Loan" icon="credit-card">
+    Loan lifecycle management — amortisation calculation, payment configuration, extraordinary payments, and loan restructuring. Currently registered with an empty definition set.
+  </Card>
+  <Card title="Publication" icon="newspaper">
+    News, notices, management updates, and contract publications. Supports file attachments via `PublicationAttachmentUploader`.
+  </Card>
+  <Card title="Messaging" icon="envelope">
+    In-development internal messaging system. Module class registered but contains no bindings yet.
+  </Card>
+  <Card title="Setting" icon="gear">
+    System-wide UI colour palette stored in `system_colors`. Exposes `GetColorUseCase` and `UpdateColorUseCase`.
+  </Card>
+</CardGroup>
+
+---
+
+## AuthModule
+
+**File:** `app/Modules/Auth/AuthModule.php`
+
+```php
+final class AuthModule extends AbstractModule
+{
+    protected const array REPOSITORIES = [
+        AuthLogRepositoryInterface::class    => PdoAuthLogRepository::class,
+        CredentialRepositoryInterface::class => PdoCredentialRepository::class,
+        PasswordRecoveryInterface::class     => PdoPasswordRecoveryRepository::class,
+    ];
+
+    protected const array SERVICES = [
+        AuthEventLogger::class,
+        CredentialVerifier::class,
+        LoginAttemptPolicy::class,
+        MagicLinkTokenPolicy::class,
+    ];
+
+    protected const array USE_CASES = [
+        ChangePasswordWithTokenUseCase::class,
+        LoginUseCase::class,
+        LogoutUseCase::class,
+        PasswordResetUseCase::class,
+        RecoverPasswordWithMagicLinkUseCase::class,
+    ];
+}
+```
+
+| Layer | Classes |
+|---|---|
+| Domain entities | `AuthLog`, `UserCredential` |
+| Domain enums | `AuthLogActionEnum` |
+| Domain services | `CredentialVerifier`, `LoginAttemptPolicy`, `MagicLinkTokenPolicy` |
+| Application services | `AuthEventLogger` |
+| Use cases | `LoginUseCase`, `LogoutUseCase`, `PasswordResetUseCase`, `ChangePasswordWithTokenUseCase`, `RecoverPasswordWithMagicLinkUseCase` |
+| Repository impls | `PdoAuthLogRepository`, `PdoCredentialRepository`, `PdoPasswordRecoveryRepository` |
+| Infrastructure mail | `PasswordRecoveryMailer` (bound to `PasswordRecoveryNotifierInterface` in `definitions.php`) |
+
+---
+
+## UserModule
+
+**File:** `app/Modules/User/UserModule.php`
+
+```php
+final class UserModule extends AbstractModule
+{
+    protected const array REPOSITORIES = [
+        UserRepositoryInterface::class => PdoUserRepository::class,
+    ];
+
+    protected const array USE_CASES = [CreateUserUseCase::class];
+}
+```
+
+| Layer | Classes |
+|---|---|
+| Domain entities | `User`, `UserDocument` |
+| Domain value objects | `BankingData`, `PersonalInfo`, `WorkData` |
+| Domain enums | `DocumentTypeEnum`, `DocumentStatusEnum` |
+| Application DTOs | `CreateUser`, `UserSummary` |
+| Use cases | `CreateUserUseCase` |
+| Repository impl | `PdoUserRepository` |
+
+`CreateUser` is the DTO used both by the portal registration form and the `importar-usuarios.php` CLI command.
+
+---
+
+## LoanModule
+
+**File:** `app/Modules/Loan/LoanModule.php`
+
+```php
+class LoanModule implements ModuleInterface
+{
+    public function register(ContainerBuilder $container): void
+    {
+        $container->addDefinitions([]);
+    }
+}
+```
+
+This module implements `ModuleInterface` directly (not via `AbstractModule`) and currently registers no DI bindings. Its domain layer is rich:
+
+| Layer | Classes |
+|---|---|
+| Domain entities | `Prestamo`, `Amortizacion`, `ConfiguracionPago`, `PagoExtraordinario`, `Reestructuracion`, `Documento`, `Comprobante`, `CategoriaTipoIngreso` |
+| Domain enums | `UnidadEnum` |
+| Domain services | `CalculadoraInteresSimple` |
+| Application services | `CalculadoraSimpleAleman`, `CalculadoraCompuesto`, `SimuladorService` |
+| Application DTOs | `AmortizacionCorridaDTO` |
+| Application interfaces | `CalculadoraPrestamoInterface` |
+
+---
+
+## PublicationModule
+
+**File:** `app/Modules/Publication/PublicationModule.php`
+
+```php
+final class PublicationModule extends AbstractModule implements ModuleInterface
+{
+    protected const array REPOSITORIES = [
+        PublicationRepositoryInterface::class => PdoPublicationRepository::class,
+    ];
+
+    protected const array SERVICES = [
+        PublicationAttachmentUploader::class,
+    ];
+
+    protected const array USE_CASES = [
+        CreatePublicationUseCase::class,
+        UpdatePublicationUseCase::class,
+        DeletePublicationUseCase::class,
+        FindPublicationByIdUseCase::class,
+        FindPublicationsByTypeUseCase::class,
+    ];
+}
+```
+
+| Layer | Classes |
+|---|---|
+| Domain entities | `Publication`, `PublicationAttachment` |
+| Domain enums | `PublicationTypeEnum`, `PublicationAttachmentTypeEnum` |
+| Domain exceptions | `PublicationValidationException`, `PublicationAttachmentUploadException` |
+| Use cases | `CreatePublicationUseCase`, `UpdatePublicationUseCase`, `DeletePublicationUseCase`, `FindPublicationByIdUseCase`, `FindPublicationsByTypeUseCase` |
+| Infrastructure | `PdoPublicationRepository`, `PublicationAttachmentUploader` |
+
+---
+
+## MessagingModule
+
+**File:** `app/Modules/Messaging/MessagingModule.php`
+
+```php
+final class MessagingModule extends AbstractModule {}
+```
+
+The module class body is empty — no repositories, services, or use cases are wired yet. The domain layer defines three enums:
+
+| Enum | Values |
+|---|---|
+| `MessagePriorityEnum` | Message priority levels |
+| `MessageStateEnum` | Message state values |
+| `MessageTypeEnum` | Message category types |
+
+<Info>
+  The `mensajes` and `mensaje_detalles` database tables are defined but commented out in `database.sql`. The Messaging module is under active development.
+</Info>
+
+---
+
+## SettingModule
+
+**File:** `app/Modules/Setting/SettingModule.php`
+
+```php
+final class SettingModule extends AbstractModule
+{
+    protected const array REPOSITORIES = [
+        SettingRepositoryInterface::class => PdoSettingRepository::class,
+    ];
+
+    protected const array USE_CASES = [
+        GetColorUseCase::class,
+        UpdateColorUseCase::class,
+    ];
+}
+```
+
+| Layer | Classes |
+|---|---|
+| Domain entity | `Color` |
+| Application command | `UpdateColorCommand` |
+| Use cases | `GetColorUseCase`, `UpdateColorUseCase` |
+| Repository impl | `PdoSettingRepository` |
+
+`GetColorUseCase` reads the single row from `system_colors` (always `id = 1`). `UpdateColorUseCase` accepts an `UpdateColorCommand` carrying the new hex values.

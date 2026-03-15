@@ -1,0 +1,133 @@
+---
+title: "Loans overview"
+description: "End-to-end guide to the loan lifecycle in SIUT-ITSM: statuses, roles, folio format, and restructuring capability."
+---
+
+The Loans module lets union members request financing against their periodic income (payroll fortnights) and non-periodic benefits (holiday bonus, vacation premium, etc.). Each loan moves through a fixed eight-stage workflow from initial draft to full liquidation. A unique folio identifies every loan, and a restructuring mechanism lets the union renegotiate terms on any active loan without losing historical data.
+
+## Loan statuses
+
+The `status` column of the `loans` table drives the entire workflow. The values below are the canonical status strings used by the application.
+
+| Status | Meaning |
+|--------|---------|
+| `borrador` | Initial draft created by the member or an admin on their behalf. The loan is not yet submitted. |
+| `revision_documentos` | The member has submitted the application. Admin is reviewing attached supporting documents. |
+| `aprobado` | The loan committee has approved the amount and terms. |
+| `generacion_documentos` | The system is generating the legal promissory note (`pagaré`) and any required contracts. |
+| `validacion_firma` | The generated documents have been sent to the member for physical or digital signature. Finance is awaiting the signed copy. |
+| `desembolso` | Signed documents validated. The union is disbursing the approved amount to the member's registered bank account. |
+| `activo` | Funds have been disbursed and the amortization schedule is live. Regular deductions begin on the next scheduled fortnightly cut. |
+| `liquidado` | All scheduled payments plus any accrued default interest have been collected. The loan is fully closed. |
+
+Two additional flags exist on the `loans` row:
+
+- `requires_restructuring` (boolean) — set by the admin when a loan qualifies for renegotiation but has not yet been restructured.
+- `rejection_reason` (text) — populated when the admin moves a loan from `revision_documentos` back to `borrador` with a rejection notice.
+
+## Loan lifecycle
+
+<Steps>
+  <Step title="Application">
+    A member (role `agremiado`) fills out the loan request form at `/portal/prestamos/solicitar.php`. They specify the requested amount broken down by income source and attach a supporting document (`supporting_document_path`) for each income line. On submission the loan record is created with `status = borrador` and the `application_date` timestamp is set.
+
+    <Info>
+      Admins and finance officers can also create a loan on behalf of a member from the administration panel.
+    </Info>
+  </Step>
+
+  <Step title="Document review">
+    The loan transitions to `revision_documentos`. A finance officer or administrator reviews each `loan_payment_configuration` row, checking that the `supporting_document_path` file (typically a pay stub PDF) matches the declared income amount.
+
+    Each configuration line has its own `document_status` (`pendiente` → `validado` or `rechazado`) and a `document_validation_date`. If any document is rejected the officer can return the whole loan to `borrador` with a `rejection_reason` and `admin_observations`.
+
+    `document_review_date` is stamped when this stage is completed.
+  </Step>
+
+  <Step title="Approval">
+    The loan committee approves the loan, optionally adjusting the `approved_amount` (which may differ from `requested_amount`) and confirming the `applied_interest_rate`. The `approval_date` timestamp is recorded.
+
+    <Note>
+      `admin_observations` and `internal_observations` can be updated at this stage. `internal_observations` are committee-only notes never shown to the member.
+    </Note>
+  </Step>
+
+  <Step title="Document generation">
+    The system generates the legal documents in `loan_legal_documents`: the promissory note (`pagaré`) and any supplementary contracts. Each document carries a `version` counter that increments if the loan is later restructured. The `document_generation_date` timestamp is set.
+
+    Documents that require the member's signature have `requires_user_signature = TRUE`.
+  </Step>
+
+  <Step title="Signature validation">
+    The member uploads the signed promissory note. Finance validates the upload: `validated_by_finance = TRUE`, `validated_by` (user_id), and `validation_date` are recorded. `signature_validation_date` on the loan is stamped.
+
+    Finance signatories are recorded as free-text in `finance_signatory` (typically the name of the Finance Secretary) and `lender_signatory` (the member's confirmation).
+  </Step>
+
+  <Step title="Disbursement">
+    The approved amount is transferred to the member's bank account (`interbank_code` / `bank_account` from the `users` table). The `disbursement_date` is recorded — this is the date from which interest begins to accrue. `outstanding_balance` is initialised to `approved_amount` and the amortization table is generated.
+  </Step>
+
+  <Step title="Active">
+    The loan status becomes `activo`. The amortization table (`loan_amortization`) now drives the payment collection process. Each fortnight the corresponding row changes from `pendiente` to `pagado`. The `outstanding_balance` on the loans row is updated with every payment.
+  </Step>
+
+  <Step title="Liquidated">
+    When `outstanding_balance` reaches zero and all `loan_amortization` rows are `pagado`, the loan is closed with `status = liquidado` and `total_liquidation_date` is stamped.
+  </Step>
+</Steps>
+
+## Roles involved
+
+| Stage | Member (`agremiado`) | Admin / Finance |
+|-------|---------------------|-----------------|
+| Application | Creates the request, attaches documents | Can create on behalf of member |
+| Document review | Receives rejection notices | Reviews, validates, or rejects documents |
+| Approval | Notified of result | Approves or rejects with observations |
+| Document generation | Receives signed copies | Triggers PDF generation |
+| Signature validation | Uploads signed documents | Validates signatures |
+| Disbursement | Receives funds | Authorises and records disbursement |
+| Active | Views their amortization table | Records payments, calculates picos |
+| Liquidated | Views closed loan history | Audits closed loans |
+
+## Folio format
+
+Every loan is assigned a unique human-readable folio once submitted:
+
+```
+SIN-{YEAR}-{NNN}
+```
+
+**Examples:** `SIN-2025-001`, `SIN-2025-042`, `SIN-2026-001`
+
+The `folio` column on the `loans` table carries a `UNIQUE` constraint. An index on `idx_folio` makes folio lookups fast. Folios are displayed on the promissory note and all generated receipts (`receipt_folio` in `loan_receipts`).
+
+## Restructuring
+
+When a member cannot meet their current repayment schedule — for example due to a salary change or accumulation of default interest — a finance officer can restructure the loan.
+
+Restructuring creates a **new loan record** linked to the original via `original_loan_id`. The `loan_restructurings` table records the full audit trail:
+
+| Column | Meaning |
+|--------|---------|
+| `original_loan_id` | The loan being renegotiated |
+| `new_loan_id` | The newly created replacement loan |
+| `reason` | Short code for why the restructuring was triggered |
+| `original_outstanding_balance` | Remaining principal at restructuring date |
+| `pending_interest` | Accrued ordinary interest not yet paid |
+| `pending_default_interest` | Accrued moratory interest (picos) |
+| `new_total_amount` | Sum rolled into the new loan (`outstanding_balance + pending_interest + pending_default_interest`) |
+| `new_interest_rate` | May differ from the original rate |
+| `new_term_fortnights` | New repayment horizon |
+| `authorized_by` | `user_id` of the admin who authorised |
+
+Upon restructuring:
+
+1. The original loan is marked `liquidado` (technically closed by the new loan).
+2. A new loan at `borrador` is created with `original_loan_id` pointing back.
+3. A new amortization table is generated at `table_version = 1` for the new loan.
+4. All legal documents are re-generated at incremented `version`.
+
+<Warning>
+  Restructuring resets the payment schedule entirely. Any partially paid fortnights on the original loan are reflected only in the `loan_restructurings` audit row — they are not carried forward to the new amortization table.
+</Warning>

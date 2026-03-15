@@ -1,0 +1,176 @@
+---
+title: "Docker deployment"
+description: "Run SIUT-ITSM and its MySQL database using Docker Compose."
+---
+
+The repository includes a `Containerfile` (Podman-compatible) and a `compose.yaml` with three services: the PHP/Apache application, a MySQL 8.0 database, and a DBHub database UI. This is the recommended path for consistent, reproducible environments.
+
+## What the image includes
+
+The container image is built from `php:8.3-apache` and includes:
+
+| Component | Details |
+|-----------|---------|
+| Base image | `docker.io/php:8.3-apache` |
+| PHP extensions | `intl`, `zip`, `pdo`, `pdo_mysql`, `gd` |
+| Apache module | `mod_rewrite` enabled |
+| Composer | Copied from `docker.io/composer:latest` |
+| Port | Apache listens on **8080** (remapped from the default 80) |
+
+The image remaps Apache to port 8080 so the container can run without root privileges:
+
+```dockerfile
+RUN sed -i 's/Listen 80/Listen 8080/' /etc/apache2/ports.conf && \
+    sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8080>/' /etc/apache2/sites-enabled/000-default.conf
+```
+
+The `HOST_UID` and `HOST_GID` build arguments remap the `www-data` user to match your host user, preventing file permission issues on mounted volumes:
+
+```dockerfile
+ARG HOST_UID=1000
+ARG HOST_GID=1000
+
+RUN groupmod -g ${HOST_GID} www-data 2>/dev/null || true && \
+    usermod  -u ${HOST_UID} -g ${HOST_GID} www-data
+```
+
+## Services defined in compose.yaml
+
+The `compose.yaml` defines three services:
+
+### `app` — PHP/Apache application
+
+- Built from the `Containerfile` in the project root
+- Host port **8000** maps to container port **8080**
+- Project directory is bind-mounted to `/var/www/html` so code changes are reflected immediately
+- `vendor/` is stored in a named volume (`vendor_data`) to avoid overwriting container-installed packages with your host filesystem
+- Waits for the `db` service to pass its health check before starting
+
+### `db` — MySQL 8.0
+
+- Image: `docker.io/mysql:8.0`
+- Host port **3306** maps to container port **3306**
+- Configured with `utf8mb4` character set and `utf8mb4_unicode_ci` collation
+- Uses `mysql_native_password` authentication plugin for broad compatibility
+- A health check pings the server every 5 seconds (up to 10 retries, 20-second start period) before the app container starts
+- Data is persisted in the `db_data` named volume
+
+### `dbhub` — Database UI
+
+- Image: `docker.io/bytebase/dbhub`
+- Connects to the `db` service as `mysql://root:root@db:3306/db`
+- Accessible at **http://localhost:8080** for browsing and querying the database
+- Starts only after the `db` health check passes
+
+## Starting the stack
+
+<Steps>
+  <Step title="Build and start all services">
+    From the project root, build the application image and start all services in the background:
+
+    ```bash
+    docker compose up --build -d
+    ```
+
+    The first build downloads base images and installs system packages. Subsequent starts are faster.
+
+    <Note>
+      If you are using Podman instead of Docker, replace `docker compose` with `podman compose` throughout this guide. The `Containerfile` and `compose.yaml` are compatible with both runtimes.
+    </Note>
+  </Step>
+
+  <Step title="Import the database schema">
+    Once the `db` service is healthy, import the application schema:
+
+    ```bash
+    docker compose exec db mysql -uroot -proot db < database.sql
+    ```
+
+    Optionally load sample data:
+
+    ```bash
+    docker compose exec db mysql -uroot -proot db < database.seed.sql
+    ```
+  </Step>
+
+  <Step title="Install Composer dependencies">
+    If the `vendor/` volume is empty on first run, install dependencies inside the running container:
+
+    ```bash
+    docker compose exec app composer install
+    ```
+  </Step>
+
+  <Step title="Copy and configure the environment file">
+    Create a `.env` file if one does not already exist. Because the project directory is bind-mounted, you can edit it on your host:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Update the database connection to point to the `db` service container:
+
+    ```env
+    DB_HOST=db
+    DB_NAME=db
+    DB_USER=root
+    DB_PASSWORD=root
+    DB_PORT=3306
+
+    APP_ENV=dev
+    BASE_URL=http://localhost:8000
+    ```
+
+    <Warning>
+      The default `compose.yaml` uses `root` credentials for convenience. For any shared or production environment, use a dedicated database user with a strong password and update both the `compose.yaml` environment variables and your `.env` file accordingly.
+    </Warning>
+  </Step>
+</Steps>
+
+The application is now available at **http://localhost:8000**. The DBHub interface is at **http://localhost:8080**.
+
+## Useful commands
+
+```bash
+# View logs from all services
+docker compose logs -f
+
+# View logs from the app container only
+docker compose logs -f app
+
+# Open a shell inside the app container
+docker compose exec app bash
+
+# Stop all services (preserves volumes)
+docker compose down
+
+# Stop and remove all volumes (destroys database data)
+docker compose down -v
+
+# Rebuild the app image after Dockerfile changes
+docker compose up --build -d app
+```
+
+## Build arguments
+
+The `Containerfile` accepts build arguments to configure UID/GID mapping:
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `HOST_UID` | `1000` | Host user ID to map to `www-data` inside the container |
+| `HOST_GID` | `1000` | Host group ID to map to `www-data` inside the container |
+
+To pass your current user's UID/GID at build time:
+
+```bash
+docker compose build --build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g)
+```
+
+Or set them in a `.env` file at the project root:
+
+```env
+UID=1000
+GID=1000
+```
+
+The `compose.yaml` already references `${UID:-1000}` and `${GID:-1000}`, so the shell variables are picked up automatically.

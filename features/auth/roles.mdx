@@ -1,0 +1,81 @@
+---
+title: "User roles & permissions"
+description: "The five platform roles defined in SIUT-ITSM, what each role can access, and how the dashboard adapts per role."
+---
+
+Every user account in SIUT-ITSM is assigned exactly one role. Roles are stored as a `VARCHAR(20)` column on the `users` table (default `'no_agremiado'`) and are represented in code by the `RoleEnum` backed enum:
+
+```php
+enum RoleEnum: string {
+    case Lider       = "lider";
+    case Admin       = "administrador";
+    case Agremiado   = "agremiado";
+    case NoAgremiado = "no_agremiado";
+    case Finanzas    = "finanzas";
+}
+```
+
+The role is loaded into the `AuthenticatedUser` value object at login and is available throughout the request via `UserContextInterface`.
+
+## Role definitions
+
+| Role value      | PHP constant         | Description                                                                                   |
+| --------------- | -------------------- | --------------------------------------------------------------------------------------------- |
+| `administrador` | `RoleEnum::Admin`    | Full platform access. Can register, edit, deactivate, and view all users and their documents. |
+| `lider`         | `RoleEnum::Lider`    | Union leader. Can view and manage members, view documents, access the leader dashboard.       |
+| `finanzas`      | `RoleEnum::Finanzas` | Finance staff. Can access payroll and financial views via the finance dashboard.              |
+| `agremiado`     | `RoleEnum::Agremiado`| Full union member. Can access their profile, upload all five document types, and use member services. |
+| `no_agremiado`  | `RoleEnum::NoAgremiado` | Non-member (applicant). Limited access; can upload three identity documents to support a membership application. |
+
+## Permissions summary
+
+| Capability                          | `administrador` | `lider` | `finanzas` | `agremiado` | `no_agremiado` |
+| ----------------------------------- | :---: | :---: | :---: | :---: | :---: |
+| Register new users                  | Yes   | No    | No    | No    | No    |
+| Edit any user profile               | Yes   | No    | No    | No    | No    |
+| Deactivate users                    | Yes   | No    | No    | No    | No    |
+| View user list (`/portal/usuarios/`)| Yes   | Yes   | No    | No    | No    |
+| View any user's documents           | Yes   | Yes   | No    | No    | No    |
+| Edit own profile                    | Yes   | Yes   | Yes   | Yes   | Yes   |
+| Upload documents (own)              | Yes   | Yes   | Yes   | Yes   | Yes (3 types) |
+| Access finance dashboard            | Yes   | No    | Yes   | No    | No    |
+| Access leader dashboard             | Yes   | Yes   | No    | No    | No    |
+| Export user credential PDF          | Yes   | Yes   | No    | No    | No    |
+
+<Note>
+  The `administrador` role is assigned during initial setup or via the admin edit interface. It cannot be self-assigned.
+</Note>
+
+## Document type access by role
+
+The allowed document types per role are resolved by `DocumentHelper::resolveAllowedDocumentTypes(RoleEnum $role)`:
+
+| Document type           | `agremiado` / `lider` / `admin` / `finanzas` | `no_agremiado` |
+| ----------------------- | :---: | :---: |
+| `afiliacion`            | Yes   | No    |
+| `ine`                   | Yes   | Yes   |
+| `comprobante_domicilio` | Yes   | Yes   |
+| `comprobante_pago`      | Yes   | No    |
+| `curp`                  | Yes   | Yes   |
+
+## Role-based dashboards
+
+The portal dashboard (`/portal/`) renders a different Latte template depending on the authenticated user's role:
+
+| Template file                    | Rendered for role   |
+| -------------------------------- | ------------------- |
+| `portal/index.agremiado.latte`   | `agremiado`         |
+| `portal/index.finanzas.latte`    | `finanzas`          |
+| `portal/index.lider.latte`       | `lider`             |
+| `portal/index.no_agremiado.latte`| `no_agremiado`      |
+| `portal/index.latte`             | Default / `administrador` |
+
+Each template variant can surface role-specific widgets, shortcuts, and data summaries relevant to that user type.
+
+## Changing a user's role
+
+Only administrators can change another user's role. This is done through the user edit page at `/portal/usuarios/editar.php?id=<user_id>`. The form presents all `RoleEnum::cases()` as a select list and validates the submitted value with `RoleEnum::tryFrom()` before calling `UserRepositoryInterface::updateByAdmin()`.
+
+<Warning>
+  Downgrading a user from `agremiado` to `no_agremiado` restricts which of their previously uploaded documents are visible in the UI. The documents remain in storage but are no longer shown in the profile document panel.
+</Warning>

@@ -1,0 +1,78 @@
+---
+title: "SIUT-ITSM"
+description: "Plataforma web oficial del Sindicato Único de Trabajadores del Instituto Tecnológico Superior de Macuspana"
+---
+
+## What is SIUT-ITSM?
+
+SIUT-ITSM is the official web platform for the **Sindicato Único de Trabajadores del Instituto Tecnológico Superior de Macuspana (SIUT-ITSM)**. It provides union members with a secure, role-based portal to manage their membership, request loans, access official documents, and stay informed through union publications.
+
+The application is built with **PHP 8.3+**, uses Latte for server-rendered views, and follows a clean domain-driven module structure.
+
+<CardGroup cols={2}>
+  <Card title="Quick Setup" icon="rocket" href="/quickstart">
+    Get the platform running locally in minutes
+  </Card>
+  <Card title="Installation Guide" icon="server" href="/installation/requirements">
+    System requirements and full installation steps
+  </Card>
+  <Card title="Loan Management" icon="money-bill" href="/features/loans/overview">
+    Full lifecycle loan management with amortization
+  </Card>
+  <Card title="Developer Guide" icon="code" href="/developer/architecture">
+    Architecture, modules, and database schema
+  </Card>
+</CardGroup>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Role-based access control" icon="shield">
+    Four distinct roles — agremiado, líder, finanzas, and admin — each with tailored dashboards and permissions.
+  </Card>
+  <Card title="Loan lifecycle management" icon="file-invoice-dollar">
+    Full loan workflow from application through approval, document signing, disbursement, and amortization tracking.
+  </Card>
+  <Card title="Loan simulator" icon="calculator">
+    Members can simulate loans before applying — calculating installments, interest rates, and total costs.
+  </Card>
+  <Card title="PDF document generation" icon="file-pdf">
+    Generates promissory notes, membership credentials, and amortization schedules as downloadable PDFs.
+  </Card>
+  <Card title="Email notifications" icon="envelope">
+    Automated emails via PHPMailer for password recovery, loan status updates, and admin alerts.
+  </Card>
+  <Card title="Publications & transparency" icon="newspaper">
+    Union news, official documents, and transparency reports accessible to all members.
+  </Card>
+  <Card title="User document management" icon="folder-open">
+    Members upload affiliation documents, INE, proof of address; admins validate and track status.
+  </Card>
+  <Card title="Internal messaging" icon="inbox">
+    Built-in buzón (inbox) system for internal union communications.
+  </Card>
+</CardGroup>
+
+## Technology stack
+
+| Component | Technology |
+|-----------|------------|
+| Language | PHP 8.3+ |
+| Templating | Latte 3.x |
+| Dependency injection | PHP-DI 7.x |
+| Database | MySQL / MariaDB |
+| Email | PHPMailer 6.x |
+| PDF generation | dompdf 3.x |
+| Logging | Monolog 3.x |
+| Testing | Pest 4.x |
+| Containerization | Docker (Apache image) |
+
+## User roles
+
+| Role | Description |
+|------|-------------|
+| `no_agremiado` | Default role — limited portal access |
+| `agremiado` | Full union member — can request loans, access member features |
+| `finanzas` | Finance secretary — manages and approves loans, validates documents |
+| `lider` | Union leader — access to all member information and reports |
+| `admin` | System administrator — full access including user management and settings |

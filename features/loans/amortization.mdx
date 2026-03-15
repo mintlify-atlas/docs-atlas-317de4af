@@ -1,0 +1,223 @@
+---
+title: "Amortization & payments"
+description: "Reference for the SIUT-ITSM loan amortization table structure, interest methods, payment statuses, extraordinary payments, restructuring, and moratory interest."
+---
+
+The amortization table (`loan_amortization`) is the financial schedule that drives every regular payment collection. It is generated when a loan is disbursed and regenerated whenever an extraordinary payment or restructuring changes the remaining balance.
+
+## Table structure
+
+Each row in `loan_amortization` represents one scheduled payment:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `amortization_id` | INT PK | Auto-increment identifier |
+| `loan_id` | INT FK | Parent loan (`loans.loan_id`) |
+| `payment_number` | INT | Sequence number within the loan: 1, 2, 3 … N |
+| `income_type_id` | INT FK | Income source this payment will be deducted from (`cat_income_types`) |
+| `scheduled_date` | DATE | Target deduction date (typically the 15th or 20th of the month) |
+| `initial_balance` | DECIMAL(10,2) | Outstanding balance at the **start** of this period |
+| `principal` | DECIMAL(10,2) | Capital repaid this period (`capitalSoluto`) |
+| `ordinary_interest` | DECIMAL(10,2) | Interest charged this period |
+| `total_scheduled_payment` | DECIMAL(10,2) | `principal + ordinary_interest` |
+| `final_balance` | DECIMAL(10,2) | Outstanding balance **after** this payment: `initial_balance − principal` |
+| `payment_status` | VARCHAR(30) | Current status of this instalment (see below) |
+| `actual_payment_date` | DATETIME | When the payment was actually collected |
+| `actual_paid_amount` | DECIMAL(10,2) | Amount actually received (may differ if partial) |
+| `days_overdue` | INT | Days past `scheduled_date` when payment was recorded |
+| `generated_default_interest` | DECIMAL(10,2) | Moratory interest (picos) accrued on this row |
+| `paid_by` | INT | `user_id` of the staff member who registered the payment |
+| `payment_receipt` | VARCHAR(255) | URL of the automatically generated receipt PDF |
+| `table_version` | INT | Increments with each restructuring or extraordinary payment that regenerates the table |
+| `active` | BOOLEAN | `FALSE` if this row was superseded by a newer table version |
+
+## Payment statuses
+
+The `payment_status` field uses the following string values (derived from the `loan_amortization` table and application logic):
+
+| Status | Description |
+|--------|-------------|
+| `pendiente` | Payment not yet collected. Default state. |
+| `pagado` | Payment collected in full by the scheduled date. |
+| `pagado_con_mora` | Payment collected after the scheduled date; moratory interest was charged. |
+| `vencido` | Scheduled date has passed and no payment has been registered. |
+
+<Info>
+  The `payment_status` column is defined as `varchar(30)` (not an SQL ENUM), giving the application flexibility to extend the set of statuses without a schema migration.
+</Info>
+
+## Interest methods
+
+<Tabs>
+  <Tab title="Simple alemán (fortnightly payroll)">
+    Applied when `interest_method = 'simple_aleman'` in `loan_payment_configuration`. This is the standard method for periodic income sources (fortnightly payroll deductions).
+
+    **Core algorithm** (`CalculadoraSimpleAleman::generarCorrida`):
+
+    ```php
+    $capitalSoluto     = $capital / $periodos;           // fixed principal per period
+    $tasaPeriodo       = $tasa / 24.0;                   // fortnightly rate from annual
+    $interesPeriodo    = $saldoActual * $tasaPeriodo;    // interest on declining balance
+    $pagoPeriodo       = $capitalSoluto + $interesPeriodo;
+    $saldo             = $saldo - $capitalSoluto;
+    ```
+
+    Key properties:
+    - **Principal installment is constant** across all periods.
+    - **Interest portion decreases** each period as the balance declines.
+    - **Total payment decreases** over time (front-loaded interest).
+    - The last period uses the exact remaining balance (`round($saldo, 2)`) to eliminate rounding drift.
+
+    **Fortnightly rate derivation by `UnidadEnum`:**
+
+    | Unit | Divisor | Formula |
+    |------|---------|--------|
+    | `Quincena` (default) | 24 | `tasa / 24.0` |
+    | `Mes` | 12 | `tasa / 12.0` |
+    | `Semana` | 52 | `tasa / 52.0` |
+    | `Dia` | 365 | `tasa / 365.0` |
+
+    **Partial first period:** When calendar alignment is enabled (`alinear = true`) and the disbursement date is not already on a fortnightly cut, the first instalment is calculated using the actual day count:
+
+    ```php
+    // actual/365 (default)
+    $interesPeriodo = $saldo * $tasa * ($diasPrimerPeriodo / 365.0);
+    ```
+  </Tab>
+
+  <Tab title="Compound annuity (benefits)">
+    Applied when `interest_method = 'compuesto'` in `loan_payment_configuration`. Used for non-periodic income sources such as aguinaldo or prima vacacional.
+
+    **Constant-payment formula** (`CalculadoraCompuesto::generarCorrida`):
+
+    ```php
+    $r     = $tasa;                              // rate applied directly to the period
+    $den   = 1 - pow(1 + $r, -$periodos);
+    $cuota = ($capital * $r) / $den;             // constant total payment
+
+    // Per period:
+    $interesPeriodo = $saldoActual * $r;
+    $capitalSoluto  = $cuota - $interesPeriodo;  // principal portion grows over time
+    $saldo          = $saldo - $capitalSoluto;
+    ```
+
+    Key properties:
+    - **Total payment is constant** across all periods.
+    - **Principal portion grows** as the balance declines (inverse of simple alemán).
+    - **Interest portion decreases** each period.
+    - The last period corrects the `capitalSoluto` to the exact remaining `$saldo`.
+
+    <Note>
+      For the compound method the rate is **not** divided by frequency — it is used as the rate for the period as specified. Ensure the rate passed to the calculator matches the intended period (e.g. a fortnightly rate if `UnidadEnum::Quincena` is selected).
+    </Note>
+  </Tab>
+</Tabs>
+
+## `AmortizacionCorridaDTO`
+
+Both calculators return an array of `AmortizacionCorridaDTO` objects, which are the in-memory representation before persistence:
+
+```php
+final readonly class AmortizacionCorridaDTO
+{
+    public function __construct(
+        public DateTimeImmutable $fechaPago,
+        public float             $capitalSoluto,
+        public float             $interes,
+        public float             $valor,   // total payment = capitalSoluto + interes
+        public float             $saldo,
+    ) {}
+}
+```
+
+These map to `loan_amortization` columns as follows:
+
+| DTO property | DB column |
+|---|---|
+| `fechaPago` | `scheduled_date` |
+| `capitalSoluto` | `principal` |
+| `interes` | `ordinary_interest` |
+| `valor` | `total_scheduled_payment` |
+| `saldo` | `final_balance` |
+
+## Extraordinary payments
+
+Extraordinary payments are recorded in `loan_extraordinary_payments` and can change the amortization schedule mid-life:
+
+| `payment_type` | Effect on amortization table |
+|----------------|------------------------------|
+| `anticipo` | Reduces `outstanding_balance`; typically triggers table regeneration at a new `table_version`. Future payments are recalculated. |
+| `abono_capital` | Applies the payment exclusively to principal. Remaining installments shrink (or count decreases). Table is regenerated. |
+| `liquidacion_total` | Pays the full `outstanding_balance` plus all pending `ordinary_interest` and `generated_default_interest`. Loan transitions to `liquidado`. |
+
+Each extraordinary payment row stores the precise allocation:
+
+```sql
+applied_to_principal  DECIMAL(10,2)  -- portion clearing outstanding balance
+applied_to_interest   DECIMAL(10,2)  -- portion clearing accrued ordinary interest
+applied_to_default    DECIMAL(10,2)  -- portion clearing accrued moratory interest
+```
+
+When `regenerated_amortization_table = TRUE`, the prior table rows are set to `active = FALSE` and a new set is inserted at `table_version = generated_table_version`.
+
+## Table versioning
+
+The `table_version` column on `loan_amortization` enables full historical traceability:
+
+- Version 1 is created when the loan is disbursed.
+- Each extraordinary payment that regenerates the table increments the version.
+- Restructuring resets to version 1 on the **new** loan record.
+- Only rows where `active = TRUE` represent the **current** schedule. Rows with `active = FALSE` are the superseded history.
+
+The composite index `idx_version_active (loan_id, table_version, active)` makes it efficient to retrieve only current active rows:
+
+```sql
+SELECT * FROM loan_amortization
+WHERE loan_id = ?
+  AND active = TRUE
+ORDER BY payment_number;
+```
+
+## Moratory interest (picos)
+
+When a payment is collected after `scheduled_date`, moratory (default) interest accrues. The `loans` table carries the configured rate:
+
+```sql
+daily_default_rate  DECIMAL(5,4)   -- e.g. 0.0005 = 0.05% per day
+```
+
+The moratory interest for a given row is calculated as:
+
+```
+generated_default_interest = outstanding_balance × daily_default_rate × days_overdue
+```
+
+Where:
+- `outstanding_balance` is the balance at the time of the missed payment.
+- `daily_default_rate` is taken from the `loans` row.
+- `days_overdue` is the calendar-day gap between `scheduled_date` and `actual_payment_date`.
+
+These fields are stored on the `loan_amortization` row:
+
+```sql
+days_overdue               INT            DEFAULT 0
+generated_default_interest DECIMAL(10,2)  DEFAULT 0
+```
+
+<Warning>
+  Default interest (picos) accumulates daily. An extraordinary payment of type `liquidacion_total` must cover `applied_to_default` in addition to principal and ordinary interest to fully close the loan.
+</Warning>
+
+## Receipts
+
+Every payment event generates a `loan_receipts` row:
+
+| Column | Description |
+|--------|-------------|
+| `receipt_type` | `desembolso`, `pago_regular`, `pago_extraordinario`, `cargo_moratorio`, or `ajuste` |
+| `receipt_folio` | Unique human-readable folio for the receipt |
+| `amount` | Amount covered by this receipt |
+| `pdf_path` | Path to the auto-generated PDF |
+| `amortization_id` | Links to the specific `loan_amortization` row (NULL for disbursement receipts) |
+
+Receipts are immutable once generated and are used for member-facing proof of payment.

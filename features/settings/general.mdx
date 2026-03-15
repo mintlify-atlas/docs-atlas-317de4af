@@ -1,0 +1,119 @@
+---
+title: System settings
+description: Configure portal-wide UI theme colors from the Settings section of the admin portal.
+---
+
+The Settings module (`app/Modules/Setting/`) exposes configuration options that control the visual appearance of the SIUT-ITSM portal. Currently the configurable surface is the **color theme** — the full set of Bootstrap CSS custom properties used throughout the portal UI.
+
+## Accessing settings
+
+Settings are located under `/portal/configuracion/` in the portal. Only users with the `Admin` (`administrador`) or equivalent elevated role should have access to this section. Navigation to the settings area is protected by the portal authentication middleware.
+
+The single available settings page is:
+
+| URL | Description |
+|---|---|
+| `/portal/configuracion/colores.php` | Configure the portal's UI color theme |
+
+## Color settings
+
+### The `Color` entity
+
+The `Color` domain entity (`app/Modules/Setting/Domain/Entity/Color.php`) is a `final readonly` value object. Every color must be a valid 6-digit hexadecimal value (e.g., `#ff0000`); the constructor throws `InvalidArgumentException` otherwise.
+
+| Property | CSS variable | Default value | Description |
+|---|---|---|---|
+| `primary` | `--bs-primary` | `#611232` | Primary brand color |
+| `secondary` | `--bs-secondary` | `#a57f2c` | Secondary brand color |
+| `success` | `--bs-success` | `#38b44a` | Success / positive state color |
+| `info` | `--bs-info` | `#17a2b8` | Informational state color |
+| `warning` | `--bs-warning` | `#efb73e` | Warning state color |
+| `danger` | `--bs-danger` | `#df382c` | Danger / error state color |
+| `light` | `--bs-light` | `#e9ecef` | Light background color |
+| `dark` | `--bs-dark` | `#002f2a` | Dark text / background color |
+| `white` | `--bs-white` | `#ffffff` | White |
+| `body` | `--bs-body-color` | `#212529` | Default body text color |
+| `bodyBackground` | `--bs-body-bg` | `#f8f9fa` | Page background color |
+
+<Note>
+The defaults shown above are the values stored in the `system_colors` table. If no row exists, `GetColorUseCase` falls back to Bootstrap's standard defaults (`#0d6efd` for primary, `#6c757d` for secondary, etc.).
+</Note>
+
+### Database schema
+
+Colors are stored in a singleton row in the `system_colors` table (always `id = 1`):
+
+```sql
+CREATE TABLE IF NOT EXISTS system_colors (
+    id                int primary key default 1,
+    c_primary         varchar(7)  default '#611232',
+    c_secondary       varchar(7)  default '#a57f2c',
+    c_success         varchar(7)  default '#38b44a',
+    c_info            varchar(7)  default '#17a2b8',
+    c_warning         varchar(7)  default '#efb73e',
+    c_danger          varchar(7)  default '#df382c',
+    c_light           varchar(7)  default '#e9ecef',
+    c_dark            varchar(7)  default '#002f2a',
+    c_white           varchar(7)  default '#ffffff',
+    c_body            varchar(7)  default '#212529',
+    c_body_background varchar(7)  default '#f8f9fa'
+);
+```
+
+The `PdoSettingRepository::updateColors()` method uses `INSERT … ON DUPLICATE KEY UPDATE` to upsert the single row, so the table never holds more than one record.
+
+## Updating the color theme
+
+The color configuration form is at `/portal/configuracion/colores.php`.
+
+### Form fields
+
+Each color token has a paired input: a native `<input type="color">` picker and a text field accepting a hex code. The two inputs are synchronized via JavaScript — changing the color picker updates the hex text field and vice versa.
+
+| Form field name | Maps to `Color` property |
+|---|---|
+| `primario` | `primary` |
+| `secundario` | `secondary` |
+| `exito` | `success` |
+| `info` | `info` |
+| `advertencia` | `warning` |
+| `peligro` | `danger` |
+| `claro` | `light` |
+| `oscuro` | `dark` |
+| `blanco` | `white` |
+| `cuerpo` | `body` |
+| `fondo_cuerpo` | `bodyBackground` |
+
+### Live preview
+
+The right-hand column of the page displays a live preview panel with a primary button, a secondary button, and a sample content card. The preview updates in real time as you adjust the color pickers.
+
+### Saving changes
+
+Clicking **Guardar cambios** submits the form via `POST`. The controller:
+
+1. Parses the payload with `UpdateColorCommand::fromRequestPayload($_POST)`.
+2. Passes the command to `UpdateColorUseCase::execute()`, which calls `SettingRepositoryInterface::updateColors()`.
+3. Redirects back to the form with a success or error query parameter.
+
+<Tip>
+All hex values are lowercased before storage. The validator rejects any value that does not match the pattern `^#[0-9a-fA-F]{6}$`, so shorthand hex codes like `#fff` are not accepted.
+</Tip>
+
+## Application use cases
+
+| Use case class | Description |
+|---|---|
+| `GetColorUseCase` | Retrieves current colors from `system_colors`, falling back to Bootstrap defaults if no row exists |
+| `UpdateColorUseCase` | Validates and persists a new `Color` value object via `UpdateColorCommand` |
+
+## Access control
+
+| Action | Requirement |
+|---|---|
+| View color settings | Portal login required |
+| Update color settings | Portal login required (admin role recommended) |
+
+<Info>
+The current implementation enforces only general portal authentication at the route level. A role guard restricting this page to `Admin` users should be added at the middleware layer if not already configured at the web-server or routing level.
+</Info>

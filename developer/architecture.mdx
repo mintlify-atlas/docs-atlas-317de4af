@@ -1,0 +1,190 @@
+---
+title: "Architecture overview"
+description: "How SIUT-ITSM is structured: PHP 8.3, DDD-lite modules, Infrastructure layer, and the full HTTP request lifecycle."
+---
+
+## Overview
+
+SIUT-ITSM is a PHP 8.3+ union management SaaS platform built on a **DDD-lite modular architecture**. There is no third-party MVC framework — the application bootstraps a PHP-DI container, registers feature modules, and routes each HTTP request directly to a PHP file in `public/` that resolves its dependencies from the container and invokes a use case.
+
+Key technology choices:
+
+| Concern | Library |
+|---|---|
+| Dependency injection | `php-di/php-di` ^7.1 |
+| Templating | `latte/latte` ^3.0 |
+| Database | PDO + MySQL (`ext-pdo`) |
+| Email | `phpmailer/phpmailer` ^6.10 |
+| CSV import | `league/csv` 9.24.1 |
+| PDF generation | `dompdf/dompdf` ^3.1 |
+| UUID generation | `ramsey/uuid` ^4.9 |
+| Environment | `vlucas/phpdotenv` ^5.6 |
+| Logging | `monolog/monolog` ^3.10 |
+
+---
+
+## Folder structure
+
+```
+/
+├── app/                     # All application code (PSR-4: App\)
+│   ├── Bootstrap.php        # Container builder entry point
+│   ├── Http/
+│   │   ├── Exception/       # HTTP-layer exceptions
+│   │   ├── Middleware/      # AuthMiddleware, RoleMiddleware, MiddlewareRunner
+│   │   ├── Request/         # FormRequest, JsonRequest
+│   │   └── Response/        # JsonResponse, RedirectResponse, Redirector
+│   ├── Infrastructure/      # Cross-cutting framework adapters
+│   │   ├── Config/          # AppConfig, DatabaseConfig, MailerConfig, …
+│   │   ├── Env/             # Environment / EnvironmentInterface
+│   │   ├── Mail/            # EmailService, DatabaseMailQueue, MailQueueProcessor
+│   │   ├── Persistence/     # PdoTransactionManager, PdoBaseRepository
+│   │   ├── Security/        # CsrfTokenManager
+│   │   ├── Session/         # PhpSession / SessionInterface
+│   │   ├── Templating/      # LatteRenderer, LatteExtension, RendererInterface
+│   │   └── Upload/          # Upload helper
+│   ├── Modules/             # Feature modules (Auth, User, Loan, …)
+│   └── Shared/              # Cross-module value objects, enums, utilities
+├── bootstrap.php            # Autoload shim (require vendor/autoload.php)
+├── commands/                # CLI scripts (import users, addresses)
+├── config/
+│   ├── definitions.php      # PHP-DI factory definitions
+│   └── settings.php         # AppConfig built from .env
+├── public/                  # Web root — one .php file per route
+│   ├── assets/              # CSS, JS, images
+│   ├── cuentas/             # Login / password recovery pages
+│   └── portal/              # Authenticated portal pages
+├── scripts/
+│   └── mail-queue.php       # Cron script to flush DatabaseMailQueue
+├── templates/               # Latte layout templates and email templates
+├── tests/                   # Pest test suite
+│   ├── Feature/             # (placeholder)
+│   └── Unit/                # Unit tests
+├── tmp/                     # Runtime cache (latte_cache, di_cache, di_proxies)
+└── uploads/                 # Private file storage (outside public/)
+```
+
+---
+
+## Request lifecycle
+
+<Steps>
+  <Step title="Web server receives the request">
+    Apache (`.htaccess`) or the built-in PHP dev server (`composer run servidor`) points requests directly to the matching `.php` file inside `public/`.
+  </Step>
+  <Step title="bootstrap.php loads autoload">
+    Every entry-point file begins with `require_once __DIR__.'/../../bootstrap.php'`, which loads Composer's autoloader.
+  </Step>
+  <Step title="Bootstrap::buildContainer() builds the DI container">
+    `App\Bootstrap::buildContainer()` runs `Dotenv::createImmutable()` to load `.env`, instantiates each registered module, then loads `config/settings.php` and `config/definitions.php` via `ContainerBuilder::addDefinitions()`.
+
+    In `prod` mode the container is compiled to `tmp/di_cache` and proxies written to `tmp/di_proxies` for zero-overhead resolution on subsequent requests.
+  </Step>
+  <Step title="Middleware check">
+    Protected pages call `MiddlewareRunner::runOrRedirect()` with an `AuthMiddleware` or `RoleMiddleware` instance. On `UnauthorizedException` the runner redirects to `/cuentas/login.php`; on `ForbiddenException` it redirects to `/portal/acceso-denegado.php`.
+  </Step>
+  <Step title="Request object instantiated">
+    The page file instantiates either `FormRequest` (HTML form handling) or `JsonRequest` (JSON API endpoints). Both normalise inputs and provide typed accessors (`input()`, `integer()`, `float()`, `boolean()`, `file()`).
+  </Step>
+  <Step title="Use case executed">
+    The appropriate use case is resolved from the container (`$container->get(SomeUseCase::class)`) and called with a DTO or individual parameters. Use cases coordinate domain entities, repositories, and services — they contain all business logic.
+  </Step>
+  <Step title="Response sent">
+    HTML pages call `RendererInterface::render()` (backed by `LatteRenderer`). JSON endpoints use `JsonResponse::ok()` / `JsonResponse::badRequest()` etc. Redirects go through `Redirector::to()` which emits a 302 `Location` header.
+  </Step>
+</Steps>
+
+---
+
+## Dependency injection
+
+PHP-DI 7 is the container. Configuration is split across three sources that are merged in order:
+
+1. **Module registration** — each `AbstractModule` subclass declares `REPOSITORIES`, `SERVICES`, and `USE_CASES` as class constants. `AbstractModule::register()` loops over them and calls `autowire()` for each, binding interface → implementation for repositories.
+
+2. **`config/settings.php`** — builds the `AppConfig` value object (and its nested `DatabaseConfig`, `MailerConfig`, `UploadConfig`, `SessionConfig`) from environment variables read through `EnvironmentInterface`.
+
+3. **`config/definitions.php`** — manual factory definitions for `PDO`, `PHPMailer`, `Latte\Engine`, `Dompdf`, `Monolog\Logger`, and interface bindings (`RendererInterface → LatteRenderer`, `MailerInterface → DatabaseMailQueue`, `TransactionManager → PdoTransactionManager`, etc.).
+
+```php
+// Example: resolving a use case in a portal page
+$container = Bootstrap::buildContainer();
+$useCase   = $container->get(CreateUserUseCase::class);
+```
+
+---
+
+## Infrastructure layer
+
+The `app/Infrastructure/` directory provides framework adapters that the domain and application layers depend on through interfaces.
+
+### Config
+
+Four immutable value objects hold all runtime configuration. They are constructed once in `settings.php` and injected wherever needed:
+
+| Class | Purpose |
+|---|---|
+| `AppConfig` | Top-level aggregate (`isDev`, `baseUrl`, nested configs) |
+| `DatabaseConfig` | `host`, `database`, `user`, `password`, `port`, `charset` |
+| `MailerConfig` | SMTP credentials, `fromAddress`, `fromName`, `adminNotifications` |
+| `UploadConfig` | `publicUrl`, `publicDir`, `privateDir` |
+| `SessionConfig` | `useStrictMode`, `cookieSecure`, `cookieHttpOnly`, `cookieSameSite` |
+
+### Env
+
+`Environment` implements `EnvironmentInterface` and wraps `$_ENV` with type coercion — if the `$default` is a `bool` it runs `filter_var($value, FILTER_VALIDATE_BOOLEAN)`; if it is an `int` it casts to `(int)`.
+
+### Mail
+
+Mail sending is **queued** by default. `DatabaseMailQueue` implements `MailerInterface` and inserts rows into the `mail_queue` table. The `scripts/mail-queue.php` cron script runs `MailQueueProcessor` to flush pending messages through `EmailService` (PHPMailer SMTP). This decouples request latency from SMTP delivery time.
+
+### Persistence
+
+`PdoBaseRepository` is the abstract base class for all repository implementations. It receives a `PDO` instance via constructor injection. `PdoTransactionManager` wraps `PDO::beginTransaction()` / `commit()` / `rollBack()` and exposes a `transactional(callable)` helper that automatically rolls back on exceptions.
+
+### Security
+
+`CsrfTokenManager` generates and verifies one-time 64-character hex tokens (32 random bytes). Tokens are stored in the session under the `_csrf_tokens` key and expire after one hour. The field name constant is `_csrf_token`.
+
+### Session
+
+`PhpSession` wraps the native PHP session functions behind `SessionInterface` (`start()`, `get()`, `set()`, `remove()`, `regenerate()`, `destroy()`, `isStarted()`). Session hardening is applied by `Bootstrap` at startup: `session.use_strict_mode`, `session.cookie_secure`, `session.cookie_httponly`, `session.cookie_samesite = Lax`.
+
+### Templating
+
+`LatteRenderer` implements `RendererInterface` and wraps `Latte\Engine`. It automatically injects `authUser` (the current authenticated user DTO) into every template unless the caller already provides that key. `LatteExtension` registers two global Latte functions: `url()` (URL builder) and `upload()` (upload URL resolver).
+
+<Note>
+  Latte templates use the `.latte` extension and are cached in `tmp/latte_cache`. In development (`APP_ENV=dev`) the cache auto-refreshes on change. In production the cache is not refreshed automatically — delete `tmp/latte_cache` after deploying template changes.
+</Note>
+
+### Upload
+
+`UploadConfig` provides two storage paths: `publicDir` (`public/uploads/`) for files served over HTTP, and `privateDir` (`uploads/` at the project root) for files that must not be directly accessible via the web.
+
+---
+
+## Domain / Application separation
+
+Each module follows a three-layer convention:
+
+```
+app/Modules/<Name>/
+├── Domain/
+│   ├── Entity/          # Rich domain entities
+│   ├── ValueObject/     # Immutable value objects
+│   ├── Enum/            # Domain enumerations
+│   ├── Repository/      # Repository interfaces (no PDO)
+│   ├── Service/         # Pure domain services
+│   └── Exception/       # Domain exceptions
+├── Application/
+│   ├── UseCase/         # One class per use case (orchestrates domain)
+│   ├── DTO/             # Data transfer objects (in/out)
+│   └── Service/         # Application-level services (e.g. AuthEventLogger)
+└── Infrastructure/
+    ├── Persistence/     # PDO repository implementations
+    ├── Mail/            # Module-specific mailers
+    └── Upload/          # Module-specific upload helpers
+```
+
+Domain code has **no** awareness of PDO, PHPMailer, Latte, or PHP-DI. All framework coupling lives in the Infrastructure layer.

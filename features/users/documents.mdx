@@ -1,0 +1,151 @@
+---
+title: "User documents"
+description: "How users upload identity and membership documents in SIUT-ITSM and how administrators validate or reject them."
+---
+
+SIUT-ITSM manages a set of per-user documents (INE, CURP, proof of address, etc.) that support the union membership and payroll processes. Documents are uploaded through the profile page, stored privately on the server, and reviewed by an administrator or leader.
+
+## Document types
+
+Document types are defined in `DocumentTypeEnum`:
+
+```php
+enum DocumentTypeEnum: string {
+    case Afiliacion           = "afiliacion";
+    case Ine                  = "ine";
+    case ComprobanteDomicilio = "comprobante_domicilio";
+    case Curp                 = "curp";
+    case ComprobantePago      = "comprobante_pago";
+}
+```
+
+| Enum case                | DB value                | Display label              | Required for             |
+| ------------------------ | ----------------------- | -------------------------- | ------------------------ |
+| `Afiliacion`             | `afiliacion`            | Afiliacion                 | Members (`agremiado`+)   |
+| `Ine`                    | `ine`                   | INE                        | All roles                |
+| `ComprobanteDomicilio`   | `comprobante_domicilio` | Comprobante de domicilio   | All roles                |
+| `Curp`                   | `curp`                  | CURP                       | All roles                |
+| `ComprobantePago`        | `comprobante_pago`      | Comprobante de pago        | Members (`agremiado`+)   |
+
+`no_agremiado` users can only upload `ine`, `comprobante_domicilio`, and `curp`. The full five-document set is unlocked once the user is promoted to `agremiado` or higher. This logic lives in `DocumentHelper::resolveAllowedDocumentTypes(RoleEnum $role)`.
+
+## Document statuses
+
+Document statuses are defined in `DocumentStatusEnum`:
+
+```php
+enum DocumentStatusEnum: string {
+    case Pending  = "pendiente";
+    case Validate = "validado";
+    case Rejected = "rechazado";
+}
+```
+
+| Status      | DB value    | Meaning                                                    |
+| ----------- | ----------- | ---------------------------------------------------------- |
+| `Pending`   | `pendiente` | Uploaded but not yet reviewed                             |
+| `Validate`  | `validado`  | Reviewed and accepted by an admin or leader               |
+| `Rejected`  | `rechazado` | Reviewed and rejected; user should re-upload              |
+
+## Upload flow
+
+<Steps>
+  <Step title="User opens their profile">
+    The user navigates to `/portal/perfiles/ver.php`. The page resolves which document types are applicable for the user's role and renders an upload form for each.
+  </Step>
+  <Step title="User selects a file and submits">
+    The profile page accepts file uploads via `multipart/form-data`. For documents the allowed MIME types are `application/pdf`, `image/jpeg`, `image/png`, and `image/webp`. The maximum file size is **5 MB** per document.
+  </Step>
+  <Step title="Server-side validation">
+    The `uploadProfileFile()` helper verifies:
+    - The PHP upload error code is `UPLOAD_ERR_OK`.
+    - The file size is within the 5 MB limit.
+    - The MIME type (detected via `finfo`) is in the allowed list.
+    If any check fails, a `RuntimeException` is thrown and the user sees a generic error message.
+  </Step>
+  <Step title="File stored privately">
+    Validated files are moved to the private upload directory (`$appConfig->upload->privateDir`) under a per-user subdirectory: `users/<user_id>/`. The file is renamed to `<document_type>_<8-byte-hex>.<ext>` to avoid collisions and prevent direct-URL guessing.
+  </Step>
+  <Step title="Database record created or updated">
+    `UserRepositoryInterface::upsertDocument(userId, DocumentTypeEnum, filePath)` creates a new row in `user_documents` or updates an existing one for the same `(user_id, document_type)` pair. The initial status is `pendiente`.
+  </Step>
+  <Step title="Admin or leader reviews the document">
+    Users with `administrador` or `lider` roles can view a user's documents through `/portal/usuarios/detalle.php?id=<user_id>` or `/portal/perfiles/ver.php?uid=<user_id>`. They review the file and update the status to `validado` or `rechazado`, optionally adding an observation.
+  </Step>
+</Steps>
+
+## Serving document files
+
+Because documents are stored outside the web root, they cannot be accessed via a direct URL. They are served through the controlled endpoint:
+
+```
+/portal/perfiles/documento.php?tipo=<document_type>[&uid=<user_id>]
+```
+
+This endpoint:
+
+1. Authenticates the request (`auth` middleware).
+2. Checks that the viewer has permission — only `administrador` and `lider` roles can view other users' documents (`DocumentHelper::canViewOtherUserDocuments()`).
+3. Validates that `tipo` is a known `DocumentTypeEnum` value.
+4. Resolves the file path from the database and uses `realpath()` to prevent path traversal attacks.
+5. Serves the file with the correct `Content-Type` header; PDFs and images are served `inline`, everything else `attachment`.
+
+<Warning>
+  Documents stored in the older public upload directory are still accessible for backwards compatibility. New uploads always go to the private directory.
+</Warning>
+
+## `user_documents` table structure
+
+```sql
+CREATE TABLE IF NOT EXISTS user_documents (
+    document_id   INT AUTO_INCREMENT PRIMARY KEY,
+    user_id       INT          NOT NULL,
+    document_type VARCHAR(100) NOT NULL,  -- 'afiliacion', 'ine', 'comprobante_domicilio', etc.
+    file_path     VARCHAR(255) NOT NULL,
+    status        VARCHAR(30)  NOT NULL DEFAULT 'pendiente',
+    observation   TEXT,
+    created_at    DATETIME              DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME              DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    validated_by  INT,                  -- user_id of the reviewer
+    CONSTRAINT fk_document_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
+    INDEX idx_user_document_type (user_id, document_type),
+    INDEX idx_status (status)
+);
+```
+
+Key columns:
+
+| Column         | Description                                               |
+| -------------- | --------------------------------------------------------- |
+| `document_type`| String value of `DocumentTypeEnum` (e.g. `"ine"`)       |
+| `file_path`    | Relative path from the upload root to the stored file     |
+| `status`       | String value of `DocumentStatusEnum` (default `pendiente`)|
+| `observation`  | Optional reviewer note, visible to the user               |
+| `validated_by` | `user_id` of the admin/leader who reviewed the document   |
+
+The `UserDocument` entity maps to this table:
+
+```php
+final readonly class UserDocument
+{
+    public function __construct(
+        public int                $id,
+        public int                $userId,
+        public DocumentTypeEnum   $type,
+        public string             $filePath,
+        public DocumentStatusEnum $status,
+        public ?string            $observations = null,
+        public ?int               $validatedBy  = null,
+        public ?DateTimeImmutable $createdAt    = null,
+    ) {}
+
+    public function isValidated(): bool
+    {
+        return $this->status === DocumentStatusEnum::Validado;
+    }
+}
+```
+
+<Note>
+  The `(user_id, document_type)` combination is treated as a logical unique key via the `idx_user_document_type` index. The upsert strategy in the repository replaces the `file_path` and resets `status` to `pendiente` whenever a user uploads a new file for an already-existing document type.
+</Note>

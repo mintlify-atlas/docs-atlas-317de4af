@@ -1,0 +1,107 @@
+---
+title: "Login & session management"
+description: "How users authenticate into SIUT-ITSM using email and password, how sessions are managed, and how authentication events are logged."
+---
+
+SIUT-ITSM uses a classic server-side session mechanism. Users submit their email and password through the login form; on success, a server session is created that carries the authenticated user's identity, role, and name for the duration of the browsing session.
+
+## Login page
+
+The login form is served at:
+
+```
+/cuentas/login.php
+```
+
+The page accepts an optional `redirect` query parameter. If present, a successful login forwards the user to that path instead of the default portal root (`/portal/`). This is used for seamless deep-link access: middleware that intercepts unauthenticated requests appends the current URL as `?redirect=` before sending the user to the login page.
+
+## Login flow
+
+<Steps>
+  <Step title="User submits the form">
+    The browser `POST`s `email` and `password` to `/cuentas/login.php`. The server captures the client IP address (`REMOTE_ADDR`) and user agent string (`HTTP_USER_AGENT`) for logging.
+  </Step>
+  <Step title="Rate-limit check">
+    `LoginAttemptPolicy::ensureNotLocked()` queries the `auth_logs` table for failed `login_attempt` events associated with that email address. If there are **5 or more** failed attempts on record, a `TooManyAttemptsException` is thrown and the user sees the message _"Demasiados intentos fallidos. Intenta más tarde"_ — no further credential lookup is performed.
+  </Step>
+  <Step title="Credential lookup">
+    `CredentialRepositoryInterface::findByEmail()` retrieves the `UserCredential` entity for the submitted email. This entity contains the stored `passwordHash`, the user's `role`, and an `isActive` flag.
+  </Step>
+  <Step title="Password verification">
+    `CredentialVerifier` calls `UserCredential::verifyPassword()`. The method uses PHP's `password_verify()` against the stored bcrypt hash. If `isActive` is `false` the method always returns `false`, effectively blocking deactivated accounts.
+  </Step>
+  <Step title="Outcome: failure">
+    When verification fails, `AuthEventLogger::failedLoginAttempt()` writes a record to `auth_logs` with `success = false` and the error message _"Intento de inicio de sesión fallido"_. The user is redirected back to the login page with the `error` query parameter set to _"Credenciales inválidas"_.
+  </Step>
+  <Step title="Outcome: success">
+    When verification passes, `AuthEventLogger::successLoginAttempt()` writes a record to `auth_logs` with `success = true`. Then `UserContextInterface::set()` stores an `AuthenticatedUser` value object — containing `id`, `name`, `email`, and `role` — into the PHP session. The user is forwarded to the `redirect` destination.
+  </Step>
+</Steps>
+
+## Session structure
+
+The session holds an `AuthenticatedUser` value object with the following fields:
+
+| Field  | Type       | Description                              |
+| ------ | ---------- | ---------------------------------------- |
+| `id`   | `int`      | Primary key from the `users` table       |
+| `name` | `string`   | User's first name                        |
+| `email`| `string`   | Login email                              |
+| `role` | `RoleEnum` | One of the five platform roles (see [Roles & permissions](/features/auth/roles)) |
+
+## Logout
+
+Logout is handled by `LogoutUseCase`. When executed it:
+
+1. Reads the current `AuthenticatedUser` from `UserContextInterface`.
+2. Calls `SessionInterface::destroy()` to invalidate the session entirely.
+3. Writes a `logout` event to `auth_logs` via `AuthEventLogger::logoutSuccess()`.
+
+The logout endpoint is located at `/cuentas/logout.php`.
+
+## Auth logging (`auth_logs` table)
+
+Every significant authentication event is persisted to the `auth_logs` table. The `AuthLog` entity maps to this table:
+
+```php
+final readonly class AuthLog
+{
+    public function __construct(
+        public AuthLogActionEnum $action,   // login_attempt | logout | password_reset
+        public bool $success = false,
+        public ?int $id = null,
+        public ?int $userId = null,
+        public ?string $email = null,
+        public ?string $ipAddress = null,
+        public ?string $userAgent = null,
+        public ?string $errorMessage = null,
+        public ?DateTimeImmutable $createdAt = null,
+    ) {}
+}
+```
+
+The `AuthLogActionEnum` defines three action types:
+
+| Value            | Constant               | When written                              |
+| ---------------- | ---------------------- | ----------------------------------------- |
+| `login_attempt`  | `LoginAttempt`         | Every login attempt, success or failure   |
+| `logout`         | `Logout`               | Successful logout                         |
+| `password_reset` | `PasswordReset`        | Password reset request and completion     |
+
+Table indexes on `user_id`, `action`, and `created_at` make it efficient to query a user's recent activity or scan for brute-force patterns.
+
+<Note>
+  The `auth_logs` table uses a nullable `user_id` foreign key with `ON DELETE SET NULL`. Log records are retained even if the associated user is later deleted.
+</Note>
+
+## Brute-force protection
+
+`LoginAttemptPolicy` enforces a threshold of **5 consecutive failed attempts** per email address. The check calls `AuthLogRepositoryInterface::getCountLastFailedAttempts(email, 5)`, which counts recent failed `login_attempt` records for the given email. Once the threshold is reached, every subsequent attempt throws `TooManyAttemptsException` until the failed-attempt count drops below 5 (for example, after records age out).
+
+<Warning>
+  The lockout is based on the email address, not the IP address. Accounts remain locked until old failed-attempt log entries age out or are manually cleared.
+</Warning>
+
+## Already-authenticated users
+
+If a user visits `/cuentas/login.php` while already holding a valid session, they are immediately redirected to the `redirect` destination without re-rendering the login form.

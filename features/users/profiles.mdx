@@ -1,0 +1,137 @@
+---
+title: "User profiles"
+description: "Profile fields available to each user, how users and admins can view and edit profile data, and how PDF credentials are generated."
+---
+
+Every user account in SIUT-ITSM has a profile composed of three groups of data: personal information, banking data, and labor data. These map directly to the three value objects inside the `User` domain entity.
+
+## Profile data structure
+
+The `User` entity is composed as follows:
+
+```php
+final readonly class User
+{
+    public function __construct(
+        public int              $id,
+        public string           $email,
+        public RoleEnum         $role,
+        public bool             $active,
+        public PersonalInfo     $personalInfo,
+        public BankingData      $bankingData,
+        public WorkData         $workData,
+        public ?DateTimeImmutable $lastEntry  = null,
+        public ?DateTimeImmutable $createdAt  = null,
+        public ?DateTimeImmutable $updatedAt  = null,
+    ) {}
+}
+```
+
+A profile is considered **complete** when both `personalInfo->curp` and `bankingData->interbankCode` are non-empty (`User::isComplete()`).
+
+### Personal information (`PersonalInfo`)
+
+| Field       | DB column    | Type         | Description                        |
+| ----------- | ------------ | ------------ | ---------------------------------- |
+| `name`      | `name`       | `string`     | First name (required)              |
+| `surnames`  | `surnames`   | `string`     | Full surnames (required)           |
+| `curp`      | `curp`       | `?string`    | CURP — 18-character Mexican national ID |
+| `birthdate` | `birthdate`  | `?DateTimeImmutable` | Date of birth            |
+| `address`   | `address`    | `?string`    | Home address                       |
+| `phone`     | `phone`      | `?string`    | Contact phone number               |
+| `photo`     | `photo`      | `?string`    | Relative path to the profile photo |
+
+<Info>
+  The `curp` field is one of the two completeness indicators checked by `User::isComplete()`. Features that depend on full membership records (such as payroll integration) may check this flag.
+</Info>
+
+### Banking data (`BankingData`)
+
+| Field           | DB column        | Type      | Description                         |
+| --------------- | ---------------- | --------- | ----------------------------------- |
+| `bankName`      | `bank_name`      | `?string` | Name of the user's bank             |
+| `interbankCode` | `interbank_code` | `?string` | CLABE / interbank code (up to 18 chars) |
+| `bankAccount`   | `bank_account`   | `?string` | Account number (up to 20 chars)     |
+
+<Info>
+  `interbankCode` is the second completeness indicator. It is required for payroll disbursements.
+</Info>
+
+### Labor data (`WorkData`)
+
+| Field           | DB column        | Type         | Description                          |
+| --------------- | ---------------- | ------------ | ------------------------------------ |
+| `category`      | `category`       | `?string`    | Job category or position title        |
+| `department`    | `department`     | `?string`    | Department or cost center             |
+| `nss`           | `nss`            | `?string`    | IMSS Social Security Number (up to 15 chars) |
+| `salary`        | `salary`         | `float`      | Monthly gross salary (default `0.0`) |
+| `workStartDate` | `work_start_date`| `?DateTimeImmutable` | Employment start date      |
+
+## Viewing a profile
+
+**URL:** `/portal/perfiles/ver.php`  
+**Template:** `ver.latte`
+
+Every authenticated user can view their own profile by visiting this URL without additional parameters. The page loads the `User` entity from `UserRepositoryInterface::findById()` using the session user's ID.
+
+Admins and leaders can inspect any user's profile by appending `?uid=<user_id>`. Access control is enforced by `DocumentHelper::canViewOtherUserDocuments(viewerRole)` — only `administrador` and `lider` roles may pass a `uid` parameter that differs from their own ID.
+
+The page also resolves and displays the user's uploaded documents. See [User documents](/features/users/documents) for details on how documents are fetched and served.
+
+## Editing a profile (self-service)
+
+Users can update their own profile by submitting the form on `/portal/perfiles/ver.php`. The following fields are editable by the user themselves:
+
+| POST field   | Profile field          |
+| ------------ | ---------------------- |
+| `direccion`  | `personalInfo->address`|
+| `telefono`   | `personalInfo->phone`  |
+| `correo`     | `email`                |
+| `fotoPerfil` | `personalInfo->photo`  |
+
+Photo uploads are validated for MIME type (`image/jpeg`, `image/png`, `image/webp`) and capped at **2 MB**. The file is stored in the public upload directory under `users/<user_id>/` with a randomized name (`perfil_<8-byte-hex>.<ext>`).
+
+<Note>
+  Only the profile owner can submit profile changes via the self-service form. If a viewer is inspecting another user's profile via `?uid=`, the POST handler returns HTTP 403.
+</Note>
+
+## Editing a profile (admin)
+
+Administrators can edit the full set of profile fields — including labor data, banking information, CURP, role, and active status — through the dedicated admin edit page:
+
+**URL:** `/portal/usuarios/editar.php?id=<user_id>`
+
+See [User management — Editing a user](/features/users/management#editing-a-user) for the full field list and validation rules.
+
+## Profile completeness
+
+The `User::isComplete()` method returns `true` only when both of the following are non-empty:
+
+```php
+public function isComplete(): bool
+{
+    return !empty($this->personalInfo->curp) &&
+        !empty($this->bankingData->interbankCode);
+}
+```
+
+This flag can be used to gate features that require a fully registered member (for example, loan applications may require a complete profile).
+
+## PDF credential generation
+
+**URL:** `/portal/usuarios/pdf.php`
+
+Administrators and leaders can generate a PDF that lists all active users as a credential report. The process:
+
+1. Fetches all active users via `UserRepositoryInterface::listado(onlyActive: true)`.
+2. Renders the `pdf.latte` template to an HTML string, injecting:
+   - The union logo (embedded as a base64 data URI from `/public/assets/images/logo.jpg`).
+   - The union's primary branding color (from `GetColorUseCase`).
+   - A dynamically computed accessible text color (black or white) calculated using the WCAG relative luminance formula.
+   - The generation timestamp.
+3. Passes the HTML to `Dompdf::loadHtml()` and calls `render()`.
+4. Streams the rendered PDF to the browser as `usuarios-activos.pdf` with `Content-Disposition: attachment`.
+
+<Info>
+  The PDF uses the organization's configurable primary color for table headers and accents. The foreground text color is automatically chosen (black or white) to ensure WCAG-compliant contrast against the primary background.
+</Info>

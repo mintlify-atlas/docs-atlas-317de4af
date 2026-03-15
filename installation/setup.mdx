@@ -1,0 +1,208 @@
+---
+title: "Manual installation"
+description: "Step-by-step instructions for installing SIUT-ITSM on a Linux server with Apache or Nginx."
+---
+
+This guide covers a full manual installation on a Linux server. For containerised deployments, see [Docker deployment](/installation/docker).
+
+<Note>
+  Before starting, confirm that your server meets all [requirements](/installation/requirements): PHP 8.3+, extensions `pdo`, `intl`, `zip`, `gd`, Composer 2.x, and MySQL 8.0+ or MariaDB 10.6+.
+</Note>
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the project into your web server's document root or a directory of your choice:
+
+    ```bash
+    git clone https://github.com/mrtnsnchz/ost-siut-itsm.git
+    cd ost-siut-itsm
+    ```
+  </Step>
+
+  <Step title="Install Composer dependencies">
+    Install all production and development dependencies:
+
+    ```bash
+    composer install
+    ```
+
+    For a production server, omit development tools (Faker, Pest, Minify):
+
+    ```bash
+    composer install --no-dev --optimize-autoloader
+    ```
+  </Step>
+
+  <Step title="Configure environment variables">
+    Copy the example environment file:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Open `.env` in your editor and set all required values:
+
+    ```env
+    # Database
+    DB_HOST=localhost
+    DB_NAME=siut_itsm
+    DB_USER=siut_user
+    DB_PASSWORD=strong_password_here
+    DB_PORT=3306
+
+    # Mailer
+    MAILER_HOST=smtp.yourprovider.com
+    MAILER_USER=noreply@yourorganization.org
+    MAILER_PASSWORD=smtp_password
+    MAILER_PORT=465
+    MAILER_FROM_ADDRESS=noreply@yourorganization.org
+    MAILER_FROM_NAME=SIUTITSM
+    MAILER_ADMIN_NOTIFICATIONS=admin@yourorganization.org
+
+    # Application
+    APP_ENV=prod
+    BASE_URL=https://yourdomain.org
+    ```
+
+    <Warning>
+      Set `APP_ENV=prod` on any server accessible to users. Development mode (`APP_ENV=dev`) disables secure session cookies.
+    </Warning>
+  </Step>
+
+  <Step title="Create the database">
+    Log in to MySQL or MariaDB and create a dedicated database and user:
+
+    ```sql
+    CREATE DATABASE siut_itsm CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    CREATE USER 'siut_user'@'localhost' IDENTIFIED BY 'strong_password_here';
+    GRANT ALL PRIVILEGES ON siut_itsm.* TO 'siut_user'@'localhost';
+    FLUSH PRIVILEGES;
+    ```
+  </Step>
+
+  <Step title="Import the database schema">
+    Import the base schema, which creates all tables and initial system data:
+
+    ```bash
+    mysql -u siut_user -p siut_itsm < database.sql
+    ```
+
+    Optionally, load sample data for testing and development:
+
+    ```bash
+    mysql -u siut_user -p siut_itsm < database.seed.sql
+    ```
+
+    See [Database configuration](/configuration/database) for a full description of both SQL files.
+  </Step>
+
+  <Step title="Set directory permissions">
+    The application writes uploaded files to the `uploads/` and `public/uploads/` directories, and writes cache files to the `templates/` cache. Make sure these are writable by the web server user (`www-data` on Debian/Ubuntu):
+
+    ```bash
+    sudo chown -R www-data:www-data uploads/ public/uploads/
+    sudo chmod -R 775 uploads/ public/uploads/
+    ```
+  </Step>
+
+  <Step title="Configure your web server">
+    <Tabs>
+      <Tab title="Apache">
+        Create a virtual host configuration file:
+
+        ```bash
+        sudo nano /etc/apache2/sites-available/siut-itsm.conf
+        ```
+
+        Paste the following, adjusting `ServerName` and `DocumentRoot` to match your setup:
+
+        ```apache
+        <VirtualHost *:80>
+            ServerName yourdomain.org
+            DocumentRoot /var/www/ost-siut-itsm
+
+            <Directory /var/www/ost-siut-itsm>
+                Options -Indexes +FollowSymLinks
+                AllowOverride All
+                Require all granted
+            </Directory>
+
+            ErrorLog ${APACHE_LOG_DIR}/siut-itsm-error.log
+            CustomLog ${APACHE_LOG_DIR}/siut-itsm-access.log combined
+        </VirtualHost>
+        ```
+
+        Enable the site and reload Apache:
+
+        ```bash
+        sudo a2ensite siut-itsm.conf
+        sudo a2enmod rewrite
+        sudo systemctl reload apache2
+        ```
+      </Tab>
+
+      <Tab title="Nginx">
+        Create a server block configuration file:
+
+        ```bash
+        sudo nano /etc/nginx/sites-available/siut-itsm
+        ```
+
+        Paste the following, adjusting paths and `server_name`:
+
+        ```nginx
+        server {
+            listen 80;
+            server_name yourdomain.org;
+            root /var/www/ost-siut-itsm;
+            index index.php index.html;
+
+            location / {
+                try_files $uri $uri/ /index.php?$query_string;
+            }
+
+            location ~ \.php$ {
+                include snippets/fastcgi-php.conf;
+                fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+            }
+
+            location ~ /\.ht {
+                deny all;
+            }
+        }
+        ```
+
+        Enable the site and reload Nginx:
+
+        ```bash
+        sudo ln -s /etc/nginx/sites-available/siut-itsm /etc/nginx/sites-enabled/
+        sudo nginx -t
+        sudo systemctl reload nginx
+        ```
+      </Tab>
+
+      <Tab title="PHP built-in (development only)">
+        For local development, start the built-in server using the Composer script:
+
+        ```bash
+        composer run servidor
+        ```
+
+        This runs `php -S localhost:8888 -t .` and makes the app available at `http://localhost:8888`.
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## Verifying the installation
+
+Open your browser to the configured URL (or `http://localhost:8888` for the built-in server). The SIUT-ITSM login page should load. If you see a blank page or an error, check the PHP error log and confirm that:
+
+- The `.env` file exists and all required variables are set.
+- The database is running and credentials are correct.
+- PHP extensions `pdo_mysql`, `intl`, and `zip` are enabled.
+- The web server user can read the project directory.
+
+<Tip>
+  Run `vendor/bin/pest` to execute the test suite and confirm the application logic is working correctly after installation.
+</Tip>

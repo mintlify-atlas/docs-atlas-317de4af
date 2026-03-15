@@ -1,0 +1,131 @@
+---
+title: "Applying for a loan"
+description: "Step-by-step guide for union members submitting a loan application in SIUT-ITSM, from filling the form to admin review and disbursement."
+---
+
+This page walks through the full loan application process from the member's perspective and explains what happens on the admin side after submission.
+
+## Before you start
+
+<Info>
+  You must be logged in with an active union-member account (`agremiado` role). Your profile must have a registered bank account (`interbank_code` / `bank_account`) — the union disburses funds by bank transfer.
+</Info>
+
+## Application walkthrough
+
+<Steps>
+  <Step title="Open the application form">
+    Navigate to:
+
+    ```
+    /portal/prestamos/solicitar.php
+    ```
+
+    The page renders the `solicitar.latte` template. If you want to estimate your payments before committing, use the [simulator](/features/loans/simulator) first — it uses the same income categories and interest rates as the real application.
+  </Step>
+
+  <Step title="Add income-source lines">
+    The application is broken into **income-source discount lines**, one per income type you want to pledge. Each line represents a separate repayment stream.
+
+    For each line, fill in:
+
+    | Field | Description |
+    |-------|-------------|
+    | **Monto** | Amount you are requesting against this income source |
+    | **Tipo** | Income category (fortnightly payroll, aguinaldo, prima vacacional, etc.) |
+    | **Cantidad** | Number of installments (only for periodic types, e.g. fortnights) |
+
+    Income categories are loaded from `cat_income_types` via `PrestamoRepository::obtenerCategoriasTipoIngreso()`. The selector disables any category already selected on another line. The maximum number of periods for a periodic type is calculated to ensure repayment finishes before November 20 of the current year (the fiscal year boundary).
+
+    <Note>
+      Each income type may only appear once per application. If you need to borrow more against the same source, increase the Monto for that line.
+    </Note>
+  </Step>
+
+  <Step title="Attach supporting documents">
+    Each income-source line requires a **supporting document** (`supporting_document_path` in `loan_payment_configuration`). This is typically:
+
+    - A recent **pay stub** (recibo de nómina) in PDF format for fortnightly payroll lines.
+    - A **benefit statement** or prior-year voucher for aguinaldo, prima vacacional, or other non-periodic benefits.
+
+    File constraints from the legacy implementation:
+    - Format: **PDF only**.
+    - Maximum size: **5 MB** per file.
+
+    <Warning>
+      Missing or mismatched supporting documents are the most common reason for rejection during the document review stage. Upload the most recent available statement for each income source.
+    </Warning>
+  </Step>
+
+  <Step title="Review the total and submit">
+    The **Total solicitado** at the top of the form displays the sum of all Monto fields in real time. Review the figure before submitting.
+
+    The form data is serialised as `descuentos_json` (a JSON array of discount lines) and submitted via HTTP POST. On submission:
+
+    1. A `loans` row is inserted with `status = borrador` and `application_date = NOW()`.
+    2. One `loan_payment_configuration` row is created per discount line.
+    3. Each supporting document is stored and its path written to `supporting_document_path`.
+    4. A folio is generated in the format `SIN-{YEAR}-{NNN}` and stored in the `folio` column.
+
+    You are redirected to a confirmation screen or the list of your active loans at `/portal/prestamos/activos.php`.
+  </Step>
+</Steps>
+
+## What happens after submission
+
+Once you submit, control passes to the admin and finance team. The loan moves through the following admin workflow stages (see [Loans overview](/features/loans/overview) for full status descriptions):
+
+### Document review (`revision_documentos`)
+
+A finance officer reviews each `loan_payment_configuration` row. They validate or reject each supporting document:
+
+- `document_status`: `pendiente` → `validado` or `rechazado`
+- `document_observations`: written if the document needs correction.
+- `document_validation_date`: stamped when a decision is made.
+
+If any document is rejected the loan is returned to `borrador` with a `rejection_reason`. You will be notified and can re-upload corrected documents.
+
+### Approval
+
+The loan committee approves the loan. They may:
+
+- Adjust the `approved_amount` (e.g. reduce the requested amount based on salary capacity).
+- Confirm or modify the `applied_interest_rate`.
+- Add `admin_observations` visible to you, and `internal_observations` for committee use only.
+
+### Document generation and signature
+
+The system generates the promissory note (`pagaré`) and stores it in `loan_legal_documents`. The record includes:
+
+- `document_type`: the category of legal document.
+- `requires_user_signature = TRUE`: you must sign and return the document.
+- `user_signature_url`: the path where your signed copy will be stored.
+- `user_signature_date`: stamped when your signature is received.
+
+Finance validates the signature (`validated_by_finance`, `validated_by`, `validation_date`).
+
+### Disbursement
+
+Once signatures are validated, the approved amount is disbursed to your registered bank account. The `disbursement_date` marks the start of interest accrual. The amortization table is generated and the loan status becomes `activo`.
+
+## Extraordinary payment types
+
+After a loan is active, three types of extraordinary payments can be applied to it via `loan_extraordinary_payments`:
+
+| `payment_type` | Description |
+|----------------|-------------|
+| `anticipo` | Early partial payment that reduces the outstanding balance. Typically triggers regeneration of the amortization table (`regenerated_amortization_table = TRUE`). |
+| `liquidacion_total` | Full early repayment of the outstanding balance, all accrued interest, and any default interest. Closes the loan as `liquidado`. |
+| `abono_capital` | Extra principal-only payment applied directly to `outstanding_balance` without interest. Reduces the number of remaining installments or the size of future payments. |
+
+Each extraordinary payment stores how the amount was applied:
+
+- `applied_to_principal` — portion that reduced the outstanding balance.
+- `applied_to_interest` — portion that cleared accrued ordinary interest.
+- `applied_to_default` — portion that cleared accrued default interest (picos).
+
+When `regenerated_amortization_table = TRUE`, a new amortization table version is created (`generated_table_version`) and all previous rows are deactivated (`active = FALSE`).
+
+<Note>
+  Only finance officers and administrators can register extraordinary payments. Contact the union's finance department to initiate an early payment.
+</Note>

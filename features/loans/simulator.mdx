@@ -1,0 +1,191 @@
+---
+title: "Loan simulator"
+description: "How to use the SIUT-ITSM loan simulator to preview fortnightly payments, total cost, and download a PDF of simulated amortization tables."
+---
+
+The loan simulator lets a member (or an admin acting on their behalf) compute an estimated repayment schedule **before submitting a formal application**. It supports multiple concurrent income sources in a single simulation run, mirrors the same calculation engine used by the real amortization table, and can export the full result set as a printable PDF.
+
+## Accessing the simulator
+
+The simulator lives at:
+
+```
+/portal/prestamos/simulador.php
+```
+
+Authentication is required. The page is rendered by `simulador.php` using the Latte template `simulador.latte` and an Alpine.js component (`simuladorData()`).
+
+## Input fields
+
+The simulator is structured around **income-source discount lines** (called *descuentos*). Each line represents one income source against which a portion of the loan will be deducted.
+
+### Per-line fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Monto | Decimal ≥ 0 | Amount to borrow against this income source |
+| Tipo | Select | Income category (`CategoriaTipoIngreso`) pulled from `cat_income_types` |
+| Cantidad | Integer (conditional) | Number of installments — only shown when the selected type is periodic (`esPeriodico = true`) |
+| Unidad | Read-only | Displayed as "Cada N días" derived from `frecuenciaDias` on the selected category |
+
+The **total solicitado** (requested total) at the top of the form updates reactively as amounts are entered across all lines.
+
+### Income type categories (`CategoriaTipoIngreso`)
+
+Categories are loaded from `PrestamoRepository::obtenerCategoriasTipoIngreso()` which queries `cat_income_types`. The PHP entity is:
+
+```php
+final readonly class CategoriaTipoIngreso
+{
+    public function __construct(
+        public int     $id,
+        public string  $nombre,
+        public ?string $descripcion     = null,
+        public bool    $esPeriodico     = false,
+        public ?int    $frecuenciaDias  = null,
+        public ?int    $mesPagoTentativo = null,
+        public ?int    $diaPagoTentativo = null,
+        public bool    $activo          = true,
+    ) {}
+}
+```
+
+Key behaviour driven by these fields:
+
+- **`esPeriodico = true`** — the Cantidad field is shown. The `frecuenciaDias` value (typically 15 for fortnights) controls the maximum number of periods available, capped at November 20 of the current year.
+- **`esPeriodico = false`** — lump-sum income (e.g. aguinaldo). No Cantidad field. The simulator defaults to a 12-period horizon.
+- Each income type can appear **at most once** across all lines; already-selected types are disabled in all other selectors.
+
+## Interest rate options
+
+The application uses the `Intereses` enum from `App\Shared\Context\Intereses`. Three rate tiers are available:
+
+| Key | Label | Rate |
+|-----|-------|------|
+| `ahorrador_no_agremiado` | Ahorrador No Agremiado | 3 % annual |
+| `ahorrador_agremiado` | Ahorrador Agremiado | 2 % annual |
+| `no_ahorrador_agremiado` | No Ahorrador Agremiado | 2.5 % annual |
+
+In the current portal implementation, `pdf-simulados.php` always applies `Intereses::AHORRADOR_NO_AGREMIADO` (3 % annual) as the default rate. The legacy simulator at `old/simulador.php` exposed the three options as a dropdown.
+
+## Calculation methods
+
+The `SimuladorService::simular()` method selects one of two calculators based on whether the income type is periodic:
+
+```php
+$calculadora = $esPeriodico
+    ? $this->calculadoraSimple   // CalculadoraSimpleAleman (German simple interest)
+    : $this->calculadoraCompuesto; // CalculadoraCompuesto (constant annuity)
+```
+
+All simulations run with `UnidadEnum::Quincena` (fortnightly) and calendar-alignment enabled (`alinear => true`), meaning the first payment date snaps to the nearest fortnightly cut (the 15th or last day of the current month).
+
+<Tabs>
+  <Tab title="Simple alemán (periodic income)">
+    Used for periodic income sources such as fortnightly payroll.
+
+    **Formula per period:**
+    ```
+    capitalSoluto = capital / periodos          // constant principal installment
+    interesPeriodo = saldoActual × (tasa / 24)  // variable interest on declining balance
+    cuota = capitalSoluto + interesPeriodo
+    ```
+
+    - Annual rate is divided by 24 to obtain the fortnightly rate (`tasa / 24.0`).
+    - Principal (`capitalSoluto`) is fixed across all periods; only the interest portion declines.
+    - The last period uses the exact remaining balance to avoid rounding drift.
+    - The first period may be a **partial period** if the disbursement date is not already on a fortnightly cut: the actual day count is used with the `actual/365` day-count convention by default.
+
+    **Day-count options** (configurable via `options['dayCount']`):
+
+    | Convention | Formula |
+    |------------|---------|
+    | `actual/365` (default) | `saldo × tasa × (días / 365)` |
+    | `actual/360` | `saldo × tasa × (días / 360)` |
+    | `period` | `saldo × tasaPeriodo × (días / 15)` |
+  </Tab>
+
+  <Tab title="Compound annuity (non-periodic benefits)">
+    Used for lump-sum income sources such as aguinaldo or prima vacacional.
+
+    **Constant instalment formula:**
+    ```
+    r    = tasa_periodo   // rate is used as-is (not divided by frequency)
+    cuota = capital × r / (1 − (1 + r)^−periodos)
+    ```
+
+    - Produces a **constant total payment** (`cuota`) each period.
+    - `capitalSoluto` per period = `cuota − interesPeriodo`; principal portion grows over time.
+    - The last period corrects for rounding by using the exact remaining balance.
+    - Also supports partial first periods and the same day-count conventions as the simple alemán method.
+  </Tab>
+</Tabs>
+
+## Simulation output
+
+After `SimuladorService::simular()` completes, the result structure is:
+
+```php
+[
+    'corrida' => AmortizacionCorridaDTO[],  // one row per period
+    'totales' => [
+        'totalInteres' => float,
+        'totalCapital' => float,
+        'totalPago'    => float,
+    ],
+]
+```
+
+Each `AmortizacionCorridaDTO` carries:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `fechaPago` | `DateTimeImmutable` | Scheduled payment date |
+| `capitalSoluto` | float | Principal repaid this period |
+| `interes` | float | Interest charged this period |
+| `valor` | float | Total payment (`capitalSoluto + interes`) |
+| `saldo` | float | Remaining balance after this payment |
+
+The formatted corrida is rendered as an HTML table in the browser (via the POST handler, not yet wired in the current portal) and always as a PDF via `pdf-simulados.php`.
+
+## PDF of simulations
+
+The endpoint `/portal/prestamos/pdf-simulados.php` accepts the same `descuentos_json` payload as the simulator form (via POST or GET) and generates a Letter-format PDF using Dompdf.
+
+The PDF includes:
+
+- **Summary bar** with three KPI boxes: monto total solicitado, interés total, total a pagar.
+- **One section per income-source simulation** with:
+  - Header showing `categoria_nombre`, monto, plazo (in fortnights), and annual rate.
+  - Info row: capital, interest, average instalment, total.
+  - Full amortization table with columns: #, fecha de pago, capital soluto, interés, cuota, saldo final.
+  - Totals row.
+- Footer disclaimer: *"Esta simulación es una estimación y puede variar según cambios en el salario o prestaciones."*
+
+<Note>
+  The PDF filename is always `simulacion-prestamos.pdf` and is sent as a download attachment (`Attachment: true`). If no valid simulation lines are provided the endpoint returns HTTP 400.
+</Note>
+
+### Period calculation for PDF
+
+When generating the PDF for a periodic income type (`esPeriodico = true`):
+
+```php
+// Fortnightly type (frecuenciaDias === 15): use cantidad directly
+$plazo = $cantidad;
+
+// Monthly type: convert to fortnights
+$plazo = (int) ceil($cantidad * 2);
+```
+
+For non-periodic types the system defaults to `$plazo = 12` fortnights.
+
+## Fortnightly cut calculation
+
+`CalculadoraInteresSimple::diasParaProximoCorte()` is a utility used to find the number of days from today to the next fortnightly cut:
+
+- If today is before the 15th → next cut is the 15th of the current month.
+- If today is on or after the 15th → next cut is the last day of the month (capped at the 30th).
+- The result adds 1 to include the cut day itself (inclusive billing convention).
+
+This drives the "fecha aproximada de terminación" shown next to each discount line in the simulator UI.

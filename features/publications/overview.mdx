@@ -1,0 +1,178 @@
+---
+title: Publications
+description: Manage union news, announcements, management updates, and contracts through the Publications module.
+---
+
+The Publications module lets authorized users create and publish content visible to all members and the general public. Content is organized into four distinct types and supports rich-text authoring, thumbnail images, and file attachments.
+
+## Publication types
+
+Every publication belongs to exactly one of the following types, defined by `PublicationTypeEnum`:
+
+| Enum case | DB value | Meaning |
+|---|---|---|
+| `Alert` | `aviso` | Short-lived notices and announcements |
+| `News` | `noticia` | General union news articles |
+| `Management` | `gestion` | Administrative and management updates |
+| `Contracts` | `contratos` | Contract-related publications |
+
+Each type has its own listing page inside the portal (`/portal/publicaciones/avisos.php`, `noticias.php`, `gestiones.php`, `contratos.php`) and a corresponding public-facing page under `/publicaciones/`.
+
+## Publication entity
+
+The `Publication` domain entity (`app/Modules/Publication/Domain/Entity/Publication.php`) is a `final readonly` class with the following fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | `int` | Yes | Auto-incremented primary key |
+| `authorId` | `int` | Yes | `user_id` of the staff member who created the post |
+| `title` | `string` | Yes | Publication headline (max 100 characters) |
+| `content` | `string` | Yes | Full HTML body (sanitized, supports a safe subset of tags) |
+| `type` | `PublicationTypeEnum` | Yes | One of the four publication types above |
+| `attachments` | `PublicationAttachment[]` | No | Zero or more attached files |
+| `thumbnailUrl` | `?string` | No | Relative path to the cover image |
+| `summary` | `?string` | No | Short excerpt shown in listing cards (max 255 characters) |
+| `expirationDate` | `?DateTimeImmutable` | No | If set, the publication is hidden from listings on and after this date |
+| `createdAt` | `?DateTimeImmutable` | No | Set automatically by the database on `INSERT` |
+
+### Expiration behavior
+
+The `isExpired()` method on the entity returns `true` when `expirationDate` is in the past. The `PdoPublicationRepository::findByType()` query enforces the same logic at the database level:
+
+```sql
+WHERE publication_type = :type
+  AND (expiration_date IS NULL OR expiration_date >= CURRENT_DATE())
+ORDER BY created_at DESC
+```
+
+Publications retrieved by `findById()` (e.g., for the detail view) are returned regardless of expiration, so administrators can still view and edit expired posts.
+
+## Attachment entity
+
+The `PublicationAttachment` entity (`app/Modules/Publication/Domain/Entity/PublicationAttachment.php`) describes a single file attached to a publication:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `?int` | Auto-incremented primary key (`NULL` before persistence) |
+| `publicationId` | `int` | Foreign key to `publications.publication_id` |
+| `filePath` | `string` | Relative path within the uploads directory |
+| `mimeType` | `string` | MIME type detected by `fileinfo` at upload time |
+| `type` | `PublicationAttachmentTypeEnum` | `image` or `document` |
+| `description` | `?string` | Sanitized original filename used as a label |
+
+### Attachment types
+
+| Enum case | DB value | Behavior |
+|---|---|---|
+| `Image` | `image` | Displayed in a carousel in the publication detail view |
+| `Document` | `document` | Listed as a downloadable link |
+
+### Upload constraints
+
+The `PublicationAttachmentUploader` enforces the following limits:
+
+| Resource | Max size | Allowed formats |
+|---|---|---|
+| Attachment | 10 MB | JPEG, PNG, GIF, WEBP, PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, TXT, CSV, ZIP |
+| Thumbnail | 5 MB | JPEG, PNG, GIF, WEBP |
+
+Files are stored under `publications/attachments/` and thumbnails under `publications/thumbnails/` inside the configured public uploads directory. Each file receives a 16-character hex random suffix to prevent collisions.
+
+<Note>
+If no explicit thumbnail is uploaded, the system automatically promotes the first image attachment (if any) as the thumbnail URL.
+</Note>
+
+## Database schema
+
+```sql
+CREATE TABLE IF NOT EXISTS publications (
+    publication_id   INT AUTO_INCREMENT PRIMARY KEY,
+    author_id        INT,
+    title            VARCHAR(100) NOT NULL,
+    summary          VARCHAR(255),
+    content          TEXT         NOT NULL,
+    thumbnail_url    VARCHAR(255),
+    publication_type VARCHAR(30)  NOT NULL,
+    expiration_date  DATE     DEFAULT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_publication_author
+        FOREIGN KEY (author_id) REFERENCES users (user_id)
+            ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS publication_attachments (
+    attachment_id   INT AUTO_INCREMENT PRIMARY KEY,
+    publication_id  INT          NOT NULL,
+    file_path       VARCHAR(255) NOT NULL,
+    mime_type       VARCHAR(100) NOT NULL,
+    attachment_type VARCHAR(25)  NOT NULL,
+    description     VARCHAR(255),
+    CONSTRAINT fk_attachment_publication
+        FOREIGN KEY (publication_id)
+            REFERENCES publications (publication_id)
+            ON DELETE CASCADE
+);
+```
+
+## Access control
+
+| Action | Required role |
+|---|---|
+| View publications (public) | None (unauthenticated) |
+| View publications (portal) | Any authenticated user |
+| Create a publication | Any authenticated user (`auth` middleware) |
+| Edit or delete a publication | `Admin` (`administrador`) or `Lider` (`lider`) |
+
+## How to create and publish a post
+
+<Steps>
+  <Step title="Navigate to the creation form">
+    In the portal, go to **Publicaciones → Registrar** or open `/portal/publicaciones/registrar.php` directly.
+  </Step>
+  <Step title="Fill in the required fields">
+    Enter a **title** (up to 100 characters) and write the full **content** in the rich-text editor (powered by Quill.js). Both fields are mandatory.
+  </Step>
+  <Step title="Select a publication type">
+    Choose one of the four types from the **Tipo** dropdown: `aviso`, `noticia`, `gestion`, or `contratos`. The type determines which listing page the post will appear on.
+  </Step>
+  <Step title="Add an optional summary">
+    Write a short excerpt (up to 255 characters) in the **Resumen** field. This text is shown in listing cards before the reader clicks through to the full post.
+  </Step>
+  <Step title="Upload a thumbnail (optional)">
+    Upload a cover image (JPG, PNG, GIF, or WEBP, max 5 MB) via the **Miniatura** field. If omitted, the first image attachment is used instead.
+  </Step>
+  <Step title="Attach files (optional)">
+    Click **Agregar archivo** to add one or more attachments (max 10 MB each). Supported formats include images, PDF, Office documents, plain text, CSV, and ZIP archives.
+  </Step>
+  <Step title="Set an expiration date (optional)">
+    If the post should stop appearing automatically, enter a future date in the **Expiración** field. Leave blank for a post with no expiry.
+  </Step>
+  <Step title="Submit">
+    Click **Registrar publicación**. The `CreatePublicationUseCase` validates all fields, uploads any files inside a database transaction, and redirects back with a success message.
+  </Step>
+</Steps>
+
+<Tip>
+To edit an existing publication, navigate to the appropriate listing page (`avisos.php`, `noticias.php`, etc.), open the detail view, and click **Editar**. Only `Admin` and `Lider` role users can access the edit and delete forms.
+</Tip>
+
+## Public vs. portal access
+
+Publications are accessible from two separate areas of the application:
+
+- **Public site** (`/publicaciones/avisos.php`, `/publicaciones/noticias.php`, etc.) — no authentication required. Non-expired publications of each type are listed and can be read in full.
+- **Portal** (`/portal/publicaciones/`) — requires login. Provides the same listings plus the management actions (create, edit, delete).
+
+Both areas use `FindPublicationsByTypeUseCase` to retrieve non-expired publications ordered by `created_at DESC`, and `FindPublicationByIdUseCase` for individual post detail views.
+
+## Content sanitization
+
+The `CreatePublicationUseCase` and `UpdatePublicationUseCase` run all HTML content through a sanitization step before storing it. The allowed HTML tags are:
+
+```
+<p> <br> <strong> <em> <u> <s> <a> <ul> <ol> <li>
+<blockquote> <h1> <h2> <h3> <h4> <h5> <h6>
+<pre> <code> <span>
+```
+
+`<script>` and `<style>` tags are stripped unconditionally before `strip_tags` runs.

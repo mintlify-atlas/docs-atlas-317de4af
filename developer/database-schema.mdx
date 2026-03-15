@@ -1,0 +1,621 @@
+---
+title: "Database schema"
+description: "Full reference for every table in the SIUT-ITSM MySQL database, including columns, types, foreign keys, and indexes."
+---
+
+## Overview
+
+SIUT-ITSM uses MySQL with the `utf8mb4` character set throughout. The schema is defined in `database.sql` at the project root. To initialise a fresh database:
+
+```bash
+mysql -u root -p your_database < database.sql
+```
+
+A seed file with sample data is also available:
+
+```bash
+mysql -u root -p your_database < database.seed.sql
+```
+
+The PDO connection is configured in `config/definitions.php` using `PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION` and `PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC`.
+
+---
+
+## Tables
+
+<AccordionGroup>
+
+<Accordion title="users">
+
+Core user table. Stores authentication credentials, personal information, banking data, and employment details.
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    user_id         INT AUTO_INCREMENT PRIMARY KEY,
+    -- auth
+    email           VARCHAR(100)   NOT NULL UNIQUE,
+    password_hash   VARCHAR(255)   NOT NULL,
+    role            VARCHAR(20)    NOT NULL DEFAULT 'no_agremiado',
+    active          BOOLEAN                 DEFAULT TRUE,
+    -- personal
+    curp            VARCHAR(20),
+    name            VARCHAR(100)   NOT NULL,
+    surnames        VARCHAR(255)   NOT NULL,
+    birthdate       DATE                    DEFAULT NULL,
+    address         VARCHAR(255),
+    phone           VARCHAR(50),
+    photo           VARCHAR(255),
+    -- banking
+    bank_name       VARCHAR(100),
+    interbank_code  VARCHAR(18),
+    bank_account    VARCHAR(20),
+    -- employment
+    category        VARCHAR(100),
+    department      VARCHAR(100),
+    nss             VARCHAR(15),
+    salary          DECIMAL(12,2)           DEFAULT 0,
+    work_start_date DATE                    DEFAULT NULL,
+    -- session
+    last_entry      DATETIME                DEFAULT NULL,
+    created_at      DATETIME                DEFAULT CURRENT_TIMESTAMP,
+    update_at       DATETIME                DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    delete_at       DATETIME                DEFAULT NULL
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `user_id` | INT | Auto-increment primary key |
+| `email` | VARCHAR(100) | Unique; used as login identifier |
+| `password_hash` | VARCHAR(255) | Bcrypt hash |
+| `role` | VARCHAR(20) | `admin`, `lider`, `agremiado`, `no_agremiado` |
+| `active` | BOOLEAN | Soft-disable flag |
+| `curp` | VARCHAR(20) | Mexican CURP identifier |
+| `nss` | VARCHAR(15) | IMSS social security number |
+| `salary` | DECIMAL(12,2) | Base monthly salary |
+| `delete_at` | DATETIME | Soft-delete timestamp |
+
+</Accordion>
+
+<Accordion title="user_documents">
+
+Stores uploaded identity and membership documents for each user.
+
+```sql
+CREATE TABLE IF NOT EXISTS user_documents (
+    document_id   INT AUTO_INCREMENT PRIMARY KEY,
+    user_id       INT          NOT NULL,
+    document_type VARCHAR(100) NOT NULL,
+    file_path     VARCHAR(255) NOT NULL,
+    status        VARCHAR(30)  NOT NULL DEFAULT 'pendiente',
+    observation   TEXT,
+    created_at    DATETIME              DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME              DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    validated_by  INT,
+    CONSTRAINT fk_document_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
+    INDEX idx_user_document_type (user_id, document_type),
+    INDEX idx_status (status)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `user_id` | INT | FK → `users.user_id` (CASCADE delete) |
+| `document_type` | VARCHAR(100) | `afiliacion`, `ine`, `comprobante_domicilio`, `curp`, `comprobante_pago` |
+| `file_path` | VARCHAR(255) | Relative path under the uploads directory |
+| `status` | VARCHAR(30) | `pendiente`, `validado`, `rechazado` |
+| `validated_by` | INT | `user_id` of the admin who validated the document |
+
+</Accordion>
+
+<Accordion title="auth_logs">
+
+Audit log for all authentication events.
+
+```sql
+CREATE TABLE IF NOT EXISTS auth_logs (
+    auth_id       INT AUTO_INCREMENT PRIMARY KEY,
+    user_id       INT,
+    email         VARCHAR(255),
+    action        VARCHAR(50)  NOT NULL,
+    ip_address    VARCHAR(45),
+    user_agent    VARCHAR(255),
+    success       BOOLEAN      NOT NULL DEFAULT FALSE,
+    error_message TEXT,
+    created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE SET NULL,
+    INDEX idx_usuario_id (user_id),
+    INDEX idx_action (action),
+    INDEX idx_created_at (created_at)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `user_id` | INT | Nullable FK → `users.user_id` (SET NULL on delete) |
+| `email` | VARCHAR(255) | Captured at login time (even for failed attempts) |
+| `action` | VARCHAR(50) | Maps to `AuthLogActionEnum` values |
+| `ip_address` | VARCHAR(45) | Supports IPv6 |
+| `success` | BOOLEAN | `TRUE` if the action completed without error |
+
+</Accordion>
+
+<Accordion title="password_resets">
+
+Temporary tokens for the password recovery flow.
+
+```sql
+CREATE TABLE IF NOT EXISTS password_resets (
+    email      VARCHAR(255) NOT NULL,
+    token      BINARY(16)   NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX (email),
+    INDEX (token)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `token` | BINARY(16) | Raw UUID bytes (16 bytes = UUID v4) |
+| `created_at` | TIMESTAMP | Used to enforce token expiry in `MagicLinkTokenPolicy` |
+
+</Accordion>
+
+<Accordion title="cat_income_types">
+
+Catalogue of income types used to configure loan payment sources (payroll fortnights, bonuses, etc.).
+
+```sql
+CREATE TABLE IF NOT EXISTS cat_income_types (
+    income_type_id          INT AUTO_INCREMENT PRIMARY KEY,
+    name                    VARCHAR(100) NOT NULL,
+    description             TEXT,
+    is_periodic             BOOLEAN DEFAULT FALSE,
+    frequency_days          INT,
+    tentative_payment_month INT,
+    tentative_payment_day   INT,
+    active                  BOOLEAN DEFAULT TRUE
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `name` | VARCHAR(100) | E.g. `Quincena`, `Aguinaldo`, `Bono` |
+| `is_periodic` | BOOLEAN | `TRUE` for fortnightly payroll, `FALSE` for annual benefits |
+| `frequency_days` | INT | `15` for fortnights, `NULL` for annual |
+| `tentative_payment_month` | INT | Month number for annual benefits (e.g. `12` for December) |
+| `tentative_payment_day` | INT | Day of month for payment (typically `15` or `20`) |
+
+</Accordion>
+
+<Accordion title="loans">
+
+Main loan record. Tracks the full lifecycle from application through disbursement to full liquidation.
+
+```sql
+CREATE TABLE IF NOT EXISTS loans (
+    loan_id                     INT AUTO_INCREMENT PRIMARY KEY,
+    user_id                     INT            NOT NULL,
+    folio                       VARCHAR(50)    UNIQUE,
+    requested_amount            DECIMAL(10,2)  NOT NULL,
+    approved_amount             DECIMAL(10,2),
+    applied_interest_rate       DECIMAL(5,2)   NOT NULL,
+    daily_default_rate          DECIMAL(5,4),
+    estimated_total_to_pay      DECIMAL(10,2),
+    outstanding_balance         DECIMAL(10,2),
+    term_months                 INT,
+    term_fortnights             INT,
+    first_payment_date          DATE,
+    last_scheduled_payment_date DATE,
+    -- Workflow timestamps
+    application_date            DATETIME DEFAULT CURRENT_TIMESTAMP,
+    document_review_date        DATETIME,
+    approval_date               DATETIME,
+    document_generation_date    DATETIME,
+    signature_validation_date   DATETIME,
+    disbursement_date           DATETIME,
+    total_liquidation_date      DATETIME,
+    status                      VARCHAR(30) NOT NULL DEFAULT 'borrador',
+    original_loan_id            INT,
+    rejection_reason            TEXT,
+    admin_observations          TEXT,
+    internal_observations       TEXT,
+    finance_signatory           VARCHAR(255),
+    lender_signatory            VARCHAR(255),
+    requires_restructuring      BOOLEAN DEFAULT FALSE,
+    created_by                  INT,
+    deletion_date               DATETIME DEFAULT NULL,
+    CONSTRAINT fk_loan_user   FOREIGN KEY (user_id)         REFERENCES users (user_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_loan_origin FOREIGN KEY (original_loan_id) REFERENCES loans (loan_id) ON DELETE SET NULL,
+    INDEX idx_folio            (folio),
+    INDEX idx_user_status      (user_id, status),
+    INDEX idx_status_date      (status, application_date),
+    INDEX idx_origin           (original_loan_id)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `folio` | VARCHAR(50) | Auto-generated folio, e.g. `SIN-2025-001` |
+| `applied_interest_rate` | DECIMAL(5,2) | Exact percentage applied (can be customised) |
+| `daily_default_rate` | DECIMAL(5,4) | Used to calculate late payment penalties |
+| `outstanding_balance` | DECIMAL(10,2) | Updated after each payment |
+| `status` | VARCHAR(30) | `borrador`, `revision_documentos`, `aprobado`, `generacion_documentos`, `validacion_firma`, `desembolsado`, `liquidado`, `rechazado` |
+| `original_loan_id` | INT | Self-referencing FK; set when this loan is a restructuring |
+| `disbursement_date` | DATETIME | Start of interest accrual |
+
+</Accordion>
+
+<Accordion title="loan_payment_configuration">
+
+Defines how the loan is repaid — which income sources pay which amounts and how interest is calculated.
+
+```sql
+CREATE TABLE IF NOT EXISTS loan_payment_configuration (
+    payment_config_id        INT AUTO_INCREMENT PRIMARY KEY,
+    loan_id                  INT            NOT NULL,
+    income_type_id           INT            NOT NULL,
+    total_amount_to_deduct   DECIMAL(10,2)  NOT NULL,
+    number_of_installments   INT                     DEFAULT 1,
+    amount_per_installment   DECIMAL(10,2),
+    interest_method          VARCHAR(20)    NOT NULL DEFAULT 'simple_aleman',
+    supporting_document_path VARCHAR(255),
+    document_status          VARCHAR(30)    NOT NULL DEFAULT 'pendiente',
+    document_observations    TEXT,
+    document_validation_date DATETIME,
+    CONSTRAINT fk_config_loan        FOREIGN KEY (loan_id)       REFERENCES loans (loan_id)           ON DELETE CASCADE,
+    CONSTRAINT fk_config_income_type FOREIGN KEY (income_type_id) REFERENCES cat_income_types (income_type_id) ON DELETE RESTRICT
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `interest_method` | VARCHAR(20) | `simple_aleman` (fixed capital + variable interest per fortnight) or `compuesto` (single lump-sum payment) |
+| `number_of_installments` | INT | `24` for fortnights, `1` for annual benefits |
+| `supporting_document_path` | VARCHAR(255) | Pay stub or benefit statement |
+
+</Accordion>
+
+<Accordion title="loan_legal_documents">
+
+Legal documents generated for a loan (promissory note, loan application form, discount agreement).
+
+```sql
+CREATE TABLE IF NOT EXISTS loan_legal_documents (
+    legal_doc_id                INT AUTO_INCREMENT PRIMARY KEY,
+    loan_id                     INT          NOT NULL,
+    document_type               VARCHAR(50)  NOT NULL,
+    file_path                   VARCHAR(255) NOT NULL,
+    version                     INT      DEFAULT 1,
+    requires_user_signature     BOOLEAN  DEFAULT FALSE,
+    user_signature_url          VARCHAR(255),
+    user_signature_date         DATETIME,
+    requires_finance_validation BOOLEAN  DEFAULT FALSE,
+    validated_by_finance        BOOLEAN  DEFAULT FALSE,
+    validated_by                INT,
+    validation_date             DATETIME,
+    validation_observations     TEXT,
+    generation_date             DATETIME DEFAULT CURRENT_TIMESTAMP,
+    generated_by                INT,
+    CONSTRAINT fk_legal_doc_loan FOREIGN KEY (loan_id) REFERENCES loans (loan_id) ON DELETE CASCADE,
+    INDEX idx_loan_type         (loan_id, document_type),
+    INDEX idx_pending_signature (requires_user_signature, user_signature_date)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `document_type` | VARCHAR(50) | `pagare`, `solicitud_prestamo`, `descuento_agremiado` |
+| `version` | INT | Incremented when a document is regenerated after restructuring |
+| `user_signature_url` | VARCHAR(255) | Path to the signed document uploaded by the member |
+
+</Accordion>
+
+<Accordion title="loan_amortization">
+
+Amortisation schedule rows — one row per scheduled payment instalment.
+
+```sql
+CREATE TABLE IF NOT EXISTS loan_amortization (
+    amortization_id            INT AUTO_INCREMENT PRIMARY KEY,
+    loan_id                    INT            NOT NULL,
+    payment_number             INT            NOT NULL,
+    income_type_id             INT            NOT NULL,
+    scheduled_date             DATE           NOT NULL,
+    initial_balance            DECIMAL(10,2)  NOT NULL,
+    principal                  DECIMAL(10,2)  NOT NULL,
+    ordinary_interest          DECIMAL(10,2)  NOT NULL,
+    total_scheduled_payment    DECIMAL(10,2)  NOT NULL,
+    final_balance              DECIMAL(10,2)  NOT NULL,
+    payment_status             VARCHAR(30)    NOT NULL DEFAULT 'pendiente',
+    actual_payment_date        DATETIME,
+    actual_paid_amount         DECIMAL(10,2)           DEFAULT 0,
+    days_overdue               INT                     DEFAULT 0,
+    generated_default_interest DECIMAL(10,2)           DEFAULT 0,
+    paid_by                    INT,
+    payment_receipt            VARCHAR(255),
+    table_version              INT                     DEFAULT 1,
+    active                     BOOLEAN                 DEFAULT TRUE,
+    CONSTRAINT fk_amort_loan        FOREIGN KEY (loan_id)       REFERENCES loans (loan_id)           ON DELETE CASCADE,
+    CONSTRAINT fk_amort_income_type FOREIGN KEY (income_type_id) REFERENCES cat_income_types (income_type_id) ON DELETE RESTRICT,
+    INDEX idx_loan_number   (loan_id, payment_number),
+    INDEX idx_date_status   (scheduled_date, payment_status),
+    INDEX idx_version_active (loan_id, table_version, active)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `payment_number` | INT | Sequence number within the loan (1 … N) |
+| `scheduled_date` | DATE | 15th or 20th of each month |
+| `principal` | DECIMAL(10,2) | Capital portion of this instalment |
+| `ordinary_interest` | DECIMAL(10,2) | Interest portion |
+| `generated_default_interest` | DECIMAL(10,2) | Late-payment penalty accumulated |
+| `table_version` | INT | Incremented when the schedule is regenerated |
+| `active` | BOOLEAN | `FALSE` for rows from superseded schedule versions |
+
+</Accordion>
+
+<Accordion title="loan_extraordinary_payments">
+
+Records early, partial, or full loan prepayments.
+
+```sql
+CREATE TABLE IF NOT EXISTS loan_extraordinary_payments (
+    extraordinary_payment_id       INT AUTO_INCREMENT PRIMARY KEY,
+    loan_id                        INT            NOT NULL,
+    payment_type                   VARCHAR(30)    NOT NULL,
+    amount                         DECIMAL(10,2)  NOT NULL,
+    payment_date                   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    applied_to_principal           DECIMAL(10,2),
+    applied_to_interest            DECIMAL(10,2),
+    applied_to_default             DECIMAL(10,2),
+    regenerated_amortization_table BOOLEAN  DEFAULT TRUE,
+    generated_table_version        INT,
+    observations                   TEXT,
+    payment_receipt                VARCHAR(255),
+    registered_by                  INT,
+    CONSTRAINT fk_extra_payment_loan FOREIGN KEY (loan_id) REFERENCES loans (loan_id) ON DELETE CASCADE,
+    INDEX idx_loan_date (loan_id, payment_date),
+    INDEX idx_type      (payment_type)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `payment_type` | VARCHAR(30) | `anticipo`, `liquidacion_total`, `abono_capital` |
+| `regenerated_amortization_table` | BOOLEAN | `TRUE` when this payment triggered a schedule recalculation |
+| `generated_table_version` | INT | The new `table_version` created in `loan_amortization` |
+
+</Accordion>
+
+<Accordion title="loan_restructurings">
+
+Audit trail when a loan is restructured into a new loan.
+
+```sql
+CREATE TABLE IF NOT EXISTS loan_restructurings (
+    restructuring_id             INT AUTO_INCREMENT PRIMARY KEY,
+    original_loan_id             INT            NOT NULL,
+    new_loan_id                  INT            NOT NULL,
+    reason                       VARCHAR(35)    NOT NULL,
+    original_outstanding_balance DECIMAL(10,2)  NOT NULL,
+    pending_interest             DECIMAL(10,2)  NOT NULL,
+    pending_default_interest     DECIMAL(10,2)  NOT NULL,
+    new_total_amount             DECIMAL(10,2)  NOT NULL,
+    new_interest_rate            DECIMAL(5,2),
+    new_term_fortnights          INT,
+    restructuring_date           DATETIME DEFAULT CURRENT_TIMESTAMP,
+    authorized_by                INT,
+    observations                 TEXT,
+    CONSTRAINT fk_restruct_original FOREIGN KEY (original_loan_id) REFERENCES loans (loan_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_restruct_new      FOREIGN KEY (new_loan_id)      REFERENCES loans (loan_id) ON DELETE RESTRICT,
+    INDEX idx_original (original_loan_id),
+    INDEX idx_new      (new_loan_id),
+    INDEX idx_date     (restructuring_date)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `original_loan_id` | INT | The loan being restructured |
+| `new_loan_id` | INT | The replacement loan created for the restructuring |
+| `reason` | VARCHAR(35) | Reason code for the restructuring |
+
+</Accordion>
+
+<Accordion title="loan_receipts">
+
+Auto-generated payment receipts and disbursement vouchers.
+
+```sql
+CREATE TABLE IF NOT EXISTS loan_receipts (
+    receipt_id      INT AUTO_INCREMENT PRIMARY KEY,
+    loan_id         INT                NOT NULL,
+    amortization_id INT,
+    receipt_type    VARCHAR(30)        NOT NULL,
+    receipt_folio   VARCHAR(50) UNIQUE NOT NULL,
+    amount          DECIMAL(10,2)      NOT NULL,
+    description     TEXT,
+    issue_date      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    pdf_path        VARCHAR(255),
+    CONSTRAINT fk_receipt_loan         FOREIGN KEY (loan_id)         REFERENCES loans (loan_id)           ON DELETE CASCADE,
+    CONSTRAINT fk_receipt_amortization FOREIGN KEY (amortization_id) REFERENCES loan_amortization (amortization_id) ON DELETE SET NULL,
+    INDEX idx_folio     (receipt_folio),
+    INDEX idx_loan_date (loan_id, issue_date)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `amortization_id` | INT | `NULL` for disbursement receipts; set for regular payment receipts |
+| `receipt_type` | VARCHAR(30) | `desembolso`, `pago_regular`, `pago_extraordinario`, `cargo_moratorio`, `ajuste` |
+| `receipt_folio` | VARCHAR(50) | Unique folio number printed on the PDF |
+| `pdf_path` | VARCHAR(255) | Path to the generated PDF file |
+
+</Accordion>
+
+<Accordion title="publications">
+
+Content published in the union portal: news, notices, management updates, and contracts.
+
+```sql
+CREATE TABLE IF NOT EXISTS publications (
+    publication_id   INT AUTO_INCREMENT PRIMARY KEY,
+    author_id        INT,
+    title            VARCHAR(100) NOT NULL,
+    summary          VARCHAR(255),
+    content          TEXT         NOT NULL,
+    thumbnail_url    VARCHAR(255),
+    publication_type VARCHAR(30)  NOT NULL,
+    expiration_date  DATE     DEFAULT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_publication_author FOREIGN KEY (author_id) REFERENCES users (user_id) ON DELETE SET NULL,
+    INDEX idx_type_date  (publication_type, created_at),
+    INDEX idx_expiration (expiration_date)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `publication_type` | VARCHAR(30) | `noticia`, `aviso`, `gestion`, `contrato` |
+| `expiration_date` | DATE | When set, the publication is hidden after this date |
+| `author_id` | INT | Nullable FK → `users.user_id` (SET NULL on delete) |
+
+</Accordion>
+
+<Accordion title="publication_attachments">
+
+Files attached to publications (PDFs, images, etc.).
+
+```sql
+CREATE TABLE IF NOT EXISTS publication_attachments (
+    attachment_id   INT AUTO_INCREMENT PRIMARY KEY,
+    publication_id  INT          NOT NULL,
+    file_path       VARCHAR(255) NOT NULL,
+    mime_type       VARCHAR(100) NOT NULL,
+    attachment_type VARCHAR(25)  NOT NULL,
+    description     VARCHAR(255),
+    CONSTRAINT fk_attachment_publication FOREIGN KEY (publication_id)
+        REFERENCES publications (publication_id) ON DELETE CASCADE,
+    INDEX idx_publication (publication_id)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `attachment_type` | VARCHAR(25) | Enum value from `PublicationAttachmentTypeEnum` |
+| `mime_type` | VARCHAR(100) | MIME type of the uploaded file |
+
+</Accordion>
+
+<Accordion title="system_colors">
+
+Single-row table for the UI colour palette, managed by `SettingModule`.
+
+```sql
+CREATE TABLE IF NOT EXISTS system_colors (
+    id                INT     PRIMARY KEY DEFAULT 1,
+    c_primary         VARCHAR(7) DEFAULT '#611232',
+    c_secondary       VARCHAR(7) DEFAULT '#a57f2c',
+    c_success         VARCHAR(7) DEFAULT '#38b44a',
+    c_info            VARCHAR(7) DEFAULT '#17a2b8',
+    c_warning         VARCHAR(7) DEFAULT '#efb73e',
+    c_danger          VARCHAR(7) DEFAULT '#df382c',
+    c_light           VARCHAR(7) DEFAULT '#e9ecef',
+    c_dark            VARCHAR(7) DEFAULT '#002f2a',
+    c_white           VARCHAR(7) DEFAULT '#ffffff',
+    c_body            VARCHAR(7) DEFAULT '#212529',
+    c_body_background VARCHAR(7) DEFAULT '#f8f9fa'
+);
+```
+
+All values are 7-character hex colour strings (e.g. `#611232`). The table always contains exactly one row with `id = 1`.
+
+</Accordion>
+
+<Accordion title="mail_queue">
+
+Persistent outbound mail queue. Messages are inserted here synchronously and delivered asynchronously by `scripts/mail-queue.php`.
+
+```sql
+CREATE TABLE IF NOT EXISTS mail_queue (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    recipient    TEXT         NOT NULL,
+    subject      VARCHAR(255) NOT NULL,
+    body         MEDIUMTEXT   NOT NULL,
+    alt_body     TEXT,
+    priority     TINYINT                  DEFAULT 2,
+    attempts     INT                      DEFAULT 0,
+    max_attempts INT                      DEFAULT 3,
+    status       ENUM('pending','sending','sent','failed') DEFAULT 'pending',
+    last_error   TEXT,
+    scheduled_at TIMESTAMP                DEFAULT CURRENT_TIMESTAMP,
+    locked_at    TIMESTAMP NULL,
+    lock_token   VARCHAR(64) NULL,
+    created_at   TIMESTAMP                DEFAULT CURRENT_TIMESTAMP,
+    INDEX (status, priority, scheduled_at),
+    INDEX (status, lock_token)
+);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `priority` | TINYINT | `1` = Urgent, `2` = Normal, `3` = Newsletter |
+| `attempts` | INT | How many delivery attempts have been made |
+| `max_attempts` | INT | Default `3`; messages exceeding this are marked `failed` |
+| `status` | ENUM | `pending` → `sending` → `sent` or `failed` |
+| `lock_token` | VARCHAR(64) | Process identifier; prevents two cron workers from sending the same message |
+| `locked_at` | TIMESTAMP | When the lock was acquired |
+
+</Accordion>
+
+<Accordion title="localidades (created at runtime)">
+
+This table is **not** in `database.sql` — it is created on the fly by `commands/importar-direcciones.php` when you run the address import.
+
+```sql
+CREATE TABLE IF NOT EXISTS localidades (
+    id        INT AUTO_INCREMENT PRIMARY KEY,
+    cp        VARCHAR(10)  NOT NULL,
+    colonia   VARCHAR(255) NOT NULL,
+    localidad VARCHAR(255) NOT NULL,
+    ciudad    VARCHAR(255) NOT NULL,
+    estado    VARCHAR(255) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE localidades ADD INDEX idx_cp (cp);
+```
+
+Data is sourced from the official SEPOMEX postal code file (`CPdescarga.txt` inside a ZIP). All text is normalised to uppercase ASCII via `Transliterator::create("Any-Latin; Latin-ASCII; Upper()")` before insertion.
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Entity relationship summary
+
+```
+users
+  ├── user_documents       (user_id → users.user_id)
+  ├── auth_logs            (user_id → users.user_id)
+  ├── loans                (user_id → users.user_id)
+  │     ├── loan_payment_configuration  (loan_id → loans.loan_id)
+  │     │     └── cat_income_types      (income_type_id)
+  │     ├── loan_legal_documents        (loan_id → loans.loan_id)
+  │     ├── loan_amortization           (loan_id → loans.loan_id)
+  │     │     └── cat_income_types      (income_type_id)
+  │     ├── loan_extraordinary_payments (loan_id → loans.loan_id)
+  │     ├── loan_receipts               (loan_id → loans.loan_id)
+  │     └── loan_restructurings         (original_loan_id / new_loan_id → loans)
+  └── publications         (author_id → users.user_id)
+        └── publication_attachments     (publication_id → publications)
+
+(standalone)
+  system_colors
+  mail_queue
+  password_resets
+  localidades
+```

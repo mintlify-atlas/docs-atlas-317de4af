@@ -1,0 +1,147 @@
+---
+title: "Import addresses from CSV"
+description: "Populate the localidades table with Mexican postal code data from the official SEPOMEX ZIP file."
+---
+
+## Overview
+
+`commands/importar-direcciones.php` imports the official Mexican postal code database (published by SEPOMEX / Correos de México) into a `localidades` table. This data powers the address autocomplete in the member registration and editing forms.
+
+The source file is a ZIP archive (`CPdescarga.zip`) containing a pipe-delimited text file (`CPdescarga.txt`). The command creates the `localidades` table if it does not exist, truncates it, and loads all records.
+
+---
+
+## Running the command
+
+```bash
+php commands/importar-direcciones.php --path=/path/to/CPdescarga.zip
+```
+
+| Option | Required | Description |
+|---|---|---|
+| `--path` | Yes | Full path to the SEPOMEX ZIP file |
+
+<Info>
+  The official SEPOMEX postal code file can be downloaded from the Correos de México website. The file is named `CPdescarga.zip` and contains `CPdescarga.txt`.
+</Info>
+
+---
+
+## Source file format
+
+The `CPdescarga.txt` file inside the ZIP is a pipe-delimited (`|`) text file. **The first two lines are header rows and are skipped.** Each data row must have at least 13 pipe-separated fields.
+
+The command reads the following field positions (0-indexed):
+
+| Position | Field | Column in `localidades` |
+|---|---|---|
+| 0 | Postal code (Código Postal) | `cp` |
+| 1 | Colony name (Colonia) | `colonia` |
+| 3 | Locality (Localidad) | `localidad` |
+| 4 | State (Estado) | `estado` |
+| 5 | City (Ciudad) | `ciudad` |
+
+Empty fields are replaced with `N/A`.
+
+---
+
+## What happens during import
+
+<Steps>
+  <Step title="Temporary directory created">
+    A unique temporary directory is created in the system temp path (`sys_get_temp_dir()`). A shutdown function is registered to clean it up regardless of success or failure.
+  </Step>
+  <Step title="ZIP extracted">
+    The ZIP is copied into the temp directory and extracted with `ZipArchive`. The command then looks for `CPdescarga.txt` inside the extracted contents.
+  </Step>
+  <Step title="Database prepared">
+    The DI container is bootstrapped and a `PDO` connection obtained. The following MySQL optimisations are applied for bulk import performance:
+
+    ```sql
+    SET autocommit=0;
+    SET unique_checks=0;
+    SET foreign_key_checks=0;
+    ```
+
+    The `localidades` table is created if it does not exist, then **truncated**. Any existing `idx_cp` index is dropped before loading to maximise insert speed.
+  </Step>
+  <Step title="Text file read line by line">
+    `SplFileObject` reads `CPdescarga.txt` with `READ_AHEAD | SKIP_EMPTY | DROP_NEW_LINE` flags. Lines are split on `|`. Each field is passed through `limpiar()`, which:
+
+    - Converts from ISO-8859-1 to UTF-8 (`mb_convert_encoding`)
+    - Applies `Transliterator::create("Any-Latin; Latin-ASCII; Upper()")` to normalise accented characters to uppercase ASCII
+    - Strips double quotes, single quotes, and commas
+
+    Progress is printed as dots every 10,000 records.
+  </Step>
+  <Step title="CSV written to temp file">
+    Cleaned rows are written to a temporary CSV file using `fputcsv`. This intermediate file is then loaded into MySQL.
+  </Step>
+  <Step title="LOAD DATA LOCAL INFILE (primary path)">
+    The command attempts:
+
+    ```sql
+    LOAD DATA LOCAL INFILE '/tmp/cp_import_.../datos.csv'
+    INTO TABLE localidades
+    FIELDS TERMINATED BY ',' ENCLOSED BY '"' ESCAPED BY '\'
+    LINES TERMINATED BY '\n'
+    (cp, colonia, localidad, ciudad, estado);
+    ```
+
+    This is the fastest path. If the MySQL server has `local_infile` disabled, the command falls back automatically.
+  </Step>
+  <Step title="Batch insert fallback">
+    If `LOAD DATA LOCAL INFILE` throws an exception, `cargarDesdeCsv()` is called. It reads the temp CSV in batches of `5000` rows and inserts them using a single prepared statement with expanded `VALUES (?,?,?,?,?),(?,?,?,?,?),...` placeholders per batch.
+  </Step>
+  <Step title="Index recreated and settings restored">
+    After loading:
+
+    ```sql
+    ALTER TABLE localidades ADD INDEX idx_cp (cp);
+    SET unique_checks=1;
+    SET foreign_key_checks=1;
+    SET autocommit=1;
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Created table schema
+
+```sql
+CREATE TABLE IF NOT EXISTS localidades (
+    id        INT AUTO_INCREMENT PRIMARY KEY,
+    cp        VARCHAR(10)  NOT NULL,
+    colonia   VARCHAR(255) NOT NULL,
+    localidad VARCHAR(255) NOT NULL,
+    ciudad    VARCHAR(255) NOT NULL,
+    estado    VARCHAR(255) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE localidades ADD INDEX idx_cp (cp);
+```
+
+All text values are stored as uppercase ASCII. The `idx_cp` index on the postal code column is the primary lookup index for the address autocomplete feature.
+
+---
+
+## Performance notes
+
+- The SEPOMEX database contains approximately 145,000–160,000 rows.
+- With `LOAD DATA LOCAL INFILE` enabled the import typically completes in under 10 seconds.
+- With the batch-insert fallback (5,000 rows per statement) the import takes roughly 30–60 seconds depending on the MySQL server.
+- Do not run this command on a live database during peak hours — the `TRUNCATE` at the start clears the existing table immediately.
+
+---
+
+## Error handling
+
+| Scenario | Behaviour |
+|---|---|
+| ZIP file not found or unreadable | `die()` with usage message |
+| `CPdescarga.txt` not found in ZIP | `Exception` thrown, error printed, cleanup runs |
+| `LOAD DATA LOCAL INFILE` unavailable | Falls back to batch insert silently |
+| Any other exception | Error message printed; MySQL settings restored in `finally` block |
+
+The temporary directory is always cleaned up via `register_shutdown_function`.

@@ -1,80 +1,87 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Get SIUT-ITSM running locally in under five minutes."
 ---
 
-## Get started in three steps
+This guide walks you through cloning the repository, installing dependencies, and starting the built-in PHP development server so you can explore the platform immediately.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Clone the repository">
+    Clone the project from GitHub and enter the directory:
 
-### Step 1: Set up your local environment
+    ```bash
+    git clone https://github.com/mrtnsnchz/ost-siut-itsm.git
+    cd ost-siut-itsm
+    ```
+  </Step>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Install PHP dependencies">
+    Install all Composer dependencies (Latte, PHPMailer, PHP-DI, Monolog, dompdf, and more):
 
-### Step 2: Deploy your changes
+    ```bash
+    composer install
+    ```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    <Note>
+      Composer 2.x and PHP 8.3 or higher are required. Run `php -v` and `composer -V` to confirm your versions before proceeding.
+    </Note>
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Copy the environment file">
+    Copy the example environment file and open it for editing:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    cp .env.example .env
+    ```
 
-### Step 3: Go live
+    At minimum, update the database credentials to match your local MySQL or MariaDB instance:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```env
+    DB_HOST=localhost
+    DB_NAME=siut_itsm
+    DB_USER=your_db_user
+    DB_PASSWORD=your_db_password
+    DB_PORT=3306
+    ```
+
+    You can leave the mailer settings as placeholders for now if you only want to explore the interface.
+  </Step>
+
+  <Step title="Create the database and import the schema">
+    Create a database in MySQL or MariaDB, then import the schema:
+
+    ```bash
+    mysql -u your_db_user -p -e "CREATE DATABASE IF NOT EXISTS siut_itsm CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+    mysql -u your_db_user -p siut_itsm < database.sql
+    ```
+
+    To also load sample data for testing:
+
+    ```bash
+    mysql -u your_db_user -p siut_itsm < database.seed.sql
+    ```
+  </Step>
+
+  <Step title="Start the development server">
+    Use the Composer script to launch PHP's built-in web server:
+
+    ```bash
+    composer run servidor
+    ```
+
+    This runs `php -S localhost:8888 -t .` and serves the application from the project root.
+  </Step>
+</Steps>
+
+You're now running SIUT-ITSM at **http://localhost:8888**.
+
+<Tip>
+  The `APP_ENV=dev` value in your `.env` file enables development mode, which disables secure cookie settings and makes debugging easier. Never use `APP_ENV=dev` in a production environment.
+</Tip>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+- Read [Requirements](/installation/requirements) for the full list of PHP extensions and server prerequisites.
+- Follow the [Manual installation](/installation/setup) guide to configure Apache or Nginx for a production-like setup.
+- Deploy with containers using the [Docker deployment](/installation/docker) guide.
+- Explore all [environment variables](/configuration/environment) to configure the mailer, base URL, and app mode.

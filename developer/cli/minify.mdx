@@ -1,0 +1,94 @@
+---
+title: "Asset minification"
+description: "Minify custom CSS and JavaScript assets before deploying using the minificar Composer script."
+---
+
+## Overview
+
+SIUT-ITSM ships with Bootstrap 5 pre-minified. The project also contains custom CSS and JavaScript files that must be minified before deployment. The minification is performed by `commands/minificar-archivos.php` using [`matthiasmullie/minify`](https://github.com/matthiasmullie/minify).
+
+<Info>
+  `matthiasmullie/minify` is a `require-dev` dependency. It is not installed in production. Run the minify command locally or in your CI pipeline before deploying.
+</Info>
+
+---
+
+## Running the command
+
+```bash
+composer run minificar
+```
+
+This executes:
+
+```bash
+php commands/minificar-archivos.php
+```
+
+---
+
+## Files minified
+
+The following custom source files are minified:
+
+### CSS
+
+| Source file | Output |
+|---|---|
+| `public/assets/css/font-override.css` | Inline custom font override rules |
+
+### JavaScript
+
+| Source file | Purpose |
+|---|---|
+| `public/assets/js/components/tabla-gestionada.js` | Managed data table component |
+| `public/assets/js/components/toast.js` | Toast notification component |
+
+<Tip>
+  Bootstrap CSS and JS files (`bootstrap.min.css`, `bootstrap.bundle.min.js`, etc.) are already distributed in minified form and are **not** processed by this command.
+</Tip>
+
+---
+
+## When to run
+
+Run `composer run minificar` in these situations:
+
+- Before every production deployment
+- After modifying any file in `public/assets/css/` or `public/assets/js/components/`
+- After pulling changes that include asset modifications
+
+<Note>
+  The minified output files are what the Latte templates reference. If you skip this step after making CSS/JS changes, users will see the un-minified version or, if you removed the source files, a missing asset error.
+</Note>
+
+---
+
+## Installing dev dependencies
+
+If you are running the command in a clean environment, make sure dev dependencies are installed:
+
+```bash
+composer install
+# or, if only dev deps are missing:
+composer install --dev
+```
+
+Then run:
+
+```bash
+composer run minificar
+```
+
+---
+
+## Composer script definition
+
+The script is defined in `composer.json`:
+
+```json
+"scripts": {
+    "minificar": "php commands/minificar-archivos.php",
+    "servidor":  "php -S localhost:8888 -t ."
+}
+```

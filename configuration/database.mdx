@@ -1,0 +1,129 @@
+---
+title: "Database configuration"
+description: "Configure the MySQL or MariaDB connection and import the SIUT-ITSM schema."
+---
+
+SIUT-ITSM uses PDO to connect to MySQL 8.0+ or MariaDB 10.6+. All database settings are read from your `.env` file at startup and are available throughout the application via the DI-injected `DatabaseConfig` object.
+
+## Connection variables
+
+Set the following five variables in your `.env` file:
+
+| Variable | Default in .env.example | Description |
+|----------|------------------------|-------------|
+| `DB_HOST` | `localhost` | Hostname or IP of the database server. When using Docker Compose, set this to `db` (the service name). |
+| `DB_NAME` | `database_name` | Name of the database the application connects to. |
+| `DB_USER` | `username` | MySQL user with full privileges on `DB_NAME`. |
+| `DB_PASSWORD` | `password` | Password for `DB_USER`. |
+| `DB_PORT` | `3306` | TCP port of the MySQL server. Defaults to `3306` if the variable is absent. |
+
+Example configuration for a local installation:
+
+```env
+DB_HOST=localhost
+DB_NAME=siut_itsm
+DB_USER=siut_user
+DB_PASSWORD=secure_password
+DB_PORT=3306
+```
+
+Example configuration for the Docker Compose stack:
+
+```env
+DB_HOST=db
+DB_NAME=db
+DB_USER=root
+DB_PASSWORD=root
+DB_PORT=3306
+```
+
+<Info>
+  The connection always uses `utf8mb4` character set, set in `config/settings.php` via the `DatabaseConfig` constructor (`charset: "utf8mb4"`). You do not need to set this in your `.env` file.
+</Info>
+
+## How the connection is built
+
+The `DatabaseConfig` values are passed to a PDO instance via the DI container defined in `config/settings.php`:
+
+```php
+new DatabaseConfig(
+    host:     (string) $env->get("DB_HOST"),
+    database: (string) $env->get("DB_NAME"),
+    user:     (string) $env->get("DB_USER"),
+    password: (string) $env->get("DB_PASSWORD"),
+    port:     (int) $env->get("DB_PORT", 3306),
+    charset:  "utf8mb4",
+)
+```
+
+## Importing the database schema
+
+Two SQL files are included in the project root:
+
+### database.sql — Schema and initial data
+
+`database.sql` creates all tables required by the application. Key tables include:
+
+- `users` — Union members with personal, employment, and banking data; roles and activity tracking
+- `user_documents` — Document files uploaded by or for members (affiliations, IDs, address proofs)
+- `auth_logs` — Login and authentication event log with IP address and user-agent
+- Additional tables for publications, loans, messaging, transparency, and system configuration
+
+Import the schema:
+
+```bash
+mysql -u siut_user -p siut_itsm < database.sql
+```
+
+Or, if connecting as root:
+
+```bash
+mysql -u root -p siut_itsm < database.sql
+```
+
+### database.seed.sql — Sample data
+
+`database.seed.sql` populates the database with representative sample data for development and testing. It includes entries such as:
+
+- System color configuration
+- Income type catalogue entries (payroll cycles, public servant's day, Father's Day, and more)
+- Additional seed rows for other reference tables
+
+Import the seed data after the schema:
+
+```bash
+mysql -u siut_user -p siut_itsm < database.seed.sql
+```
+
+<Warning>
+  Import `database.sql` before `database.seed.sql`. The seed file references tables and constraints created by the schema file, and will fail if run first.
+</Warning>
+
+## Creating the database
+
+If the database does not yet exist, create it before importing:
+
+```sql
+CREATE DATABASE siut_itsm
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE USER 'siut_user'@'localhost' IDENTIFIED BY 'secure_password';
+GRANT ALL PRIVILEGES ON siut_itsm.* TO 'siut_user'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+## MySQL/MariaDB compatibility
+
+SIUT-ITSM is tested against MySQL 8.0 (the version used in the Docker Compose stack). The schema uses standard SQL features that are also fully supported by MariaDB 10.6+:
+
+- `AUTO_INCREMENT` primary keys
+- `FOREIGN KEY` constraints with `ON DELETE CASCADE`
+- `utf8mb4` character set
+- `DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`
+- `DECIMAL(12, 2)` columns for monetary values
+- `BOOLEAN` (alias for `TINYINT(1)`)
+
+<Tip>
+  When using MariaDB, the Docker Compose health check command (`mysqladmin ping`) works identically, since MariaDB ships the same `mysqladmin` binary.
+</Tip>

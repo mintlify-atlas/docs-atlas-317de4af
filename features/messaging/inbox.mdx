@@ -1,0 +1,119 @@
+---
+title: Internal messaging (buzón)
+description: The buzón (mailbox) system allows union members to send messages to administrators and leaders, who can reply directly within the portal.
+---
+
+The buzón (mailbox) is an internal messaging system accessible at `/portal/buzon/`. It provides a structured channel for union members (`agremiado`) to communicate with union staff (`administrador`, `lider`) without leaving the platform.
+
+## Message domain enumerations
+
+The Messaging module (`app/Modules/Messaging/`) defines three enumerations that describe the state and classification of messages.
+
+### Message type — `MessageTypeEnum`
+
+| Enum case | DB value | Description |
+|---|---|---|
+| `GeneralContact` | `contacto_general` | A general inquiry or contact request |
+| `TransparencyDoubt` | `transparencia_duda` | A question related to union transparency |
+| `ComplaintBox` | `buzon_queja` | A formal complaint submitted by a member |
+
+### Message priority — `MessagePriorityEnum`
+
+| Enum case | DB value | Description |
+|---|---|---|
+| `Low` | `baja` | Low-priority message |
+| `Medium` | `media` | Normal priority (default) |
+| `High` | `alta` | High-priority message |
+| `Urgent` | `urgente` | Urgent — requires immediate attention |
+
+### Message state — `MessageStateEnum`
+
+| Enum case | DB value | Description |
+|---|---|---|
+| `Open` | `abierto` | Newly submitted, not yet reviewed |
+| `InProgress` | `en_proceso` | Being handled by staff |
+| `Closed` | `cerrado` | Resolved and closed |
+| `Answered` | `respondido` | A reply has been sent |
+| `Archived` | `archivado` | Archived for record-keeping |
+
+<Info>
+The full `mensajes` and `mensaje_detalles` database tables are defined but currently commented out in `database.sql`. The buzón page visible at `/portal/buzon/` uses a simpler, legacy schema queried directly. The enumerations above reflect the intended target architecture.
+</Info>
+
+## Buzón page — `/portal/buzon/`
+
+The portal inbox page (`index.php` / `index.latte`) displays messages grouped by sender. The view adapts its layout and available actions depending on the authenticated user's role.
+
+### Message data
+
+Messages are injected into the page as JSON and rendered client-side. Each message object contains:
+
+| Field | Description |
+|---|---|
+| `id` | Message identifier |
+| `nombre` | First name of the sender |
+| `apellidos` | Last name(s) of the sender |
+| `mensaje` | Message body text |
+| `fecha` | ISO 8601 datetime of submission |
+
+Replies (`respuestas`) are keyed by `mensaje.id` and each reply contains:
+
+| Field | Description |
+|---|---|
+| `respuesta` | Reply body text |
+| `fecha` | ISO 8601 datetime of the reply |
+
+### Role-based view differences
+
+| Role | Messages shown | Reply action visible |
+|---|---|---|
+| `agremiado` | Own messages grouped as "Tú" | No |
+| `administrador` | All messages grouped by sender name | Yes |
+| `lider` | All messages grouped by sender name | Yes |
+
+Members (`agremiado`) can see their own messages and the staff replies to them. Administrators and leaders see all messages from all members and can reply to each individually.
+
+### Filtering
+
+The page provides a client-side date filter. Selecting a date in the **Filtrar por fecha** input narrows the message list to messages submitted on that day. The **Limpiar** button resets the filter.
+
+## How to send a message
+
+<Steps>
+  <Step title="Open the buzón">
+    Log in to the portal and navigate to **Buzón** in the main menu, or go to `/portal/buzon/` directly.
+  </Step>
+  <Step title="Write your message">
+    Locate the **Nuevo mensaje** panel on the right side of the page. Type your message in the textarea (field name: `mensaje`).
+  </Step>
+  <Step title="Submit">
+    Click **Enviar mensaje**. The form `POST`s to `buzon.php`. The message is saved and immediately appears in your message list.
+  </Step>
+</Steps>
+
+## How to reply to a message (Admin / Lider)
+
+<Steps>
+  <Step title="Expand a sender's messages">
+    Click on a sender's name button to expand the collapsible panel and reveal their messages.
+  </Step>
+  <Step title="Open the reply form">
+    Click the **Responder** button next to the message you want to reply to. A reply textarea expands inline beneath the message.
+  </Step>
+  <Step title="Submit your reply">
+    Type your response and click **Enviar respuesta**. The form `POST`s to `buzon.php` with the `buzon_id` hidden field identifying the original message. The reply appears nested beneath the original message for all users.
+  </Step>
+</Steps>
+
+## Access control
+
+| Action | Required role |
+|---|---|
+| View own messages | Any authenticated user |
+| View all messages | `Admin` (`administrador`) or `Lider` (`lider`) |
+| Send a message | Any authenticated user |
+| Reply to a message | `Admin` (`administrador`) or `Lider` (`lider`) |
+
+<Note>
+The reply form and **Responder** button are only rendered in the HTML when the current user's role is `administrador` or `lider`. Members cannot reply to their own messages through this interface.
+</Note>

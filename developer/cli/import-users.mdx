@@ -1,0 +1,118 @@
+---
+title: "Import users from CSV"
+description: "Bulk-import union members from a CSV file using the importar-usuarios.php CLI command."
+---
+
+## Overview
+
+`commands/importar-usuarios.php` reads a CSV file and creates user accounts via `CreateUserUseCase`. It is the recommended way to migrate an existing member roster into SIUT-ITSM.
+
+The command bootstraps the full DI container, which means it connects to the real database and sends no emails — it only creates rows in `users`.
+
+---
+
+## Running the command
+
+```bash
+php commands/importar-usuarios.php \
+  --path=/path/to/members.csv \
+  [--default-password=temporal]
+```
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--path` | Yes | — | Absolute or relative path to the CSV file |
+| `--default-password` | No | `temporal` | Password assigned to every imported user |
+
+<Tip>
+  All imported users receive the same `--default-password`. Inform members to change their password on first login, or trigger the password-reset flow after import.
+</Tip>
+
+---
+
+## CSV column format
+
+The CSV must have a **header row** as its first line. Column names are matched exactly (case-sensitive). Columns that are not present or are empty are treated as `null`.
+
+| Column name | Required | Type | Notes |
+|---|---|---|---|
+| `nombre` | Yes | string | First name. Import fails for this row if missing. |
+| `apellidos` | Yes | string | Surnames. Import fails for this row if missing. |
+| `email` | No | string | If absent or blank, a fallback address is generated: `firstname.surnames.N@import.local` |
+| `rol` | No | string | One of `admin`, `lider`, `agremiado`, `no_agremiado`. Defaults to `no_agremiado` if unrecognised. |
+| `curp` | No | string | 18-character CURP identifier |
+| `fecha_nacimiento` | No | date | Accepts `d/m/Y`, `d/m/Y H:i`, `Y-m-d`, `Y-m-d H:i:s` |
+| `direccion` | No | string | Free-form address string |
+| `telefono` | No | string | Phone number (no format enforced) |
+| `categoria` | No | string | Job category |
+| `departamento` | No | string | Department name |
+| `nss` | No | string | IMSS social security number |
+| `fecha_ingreso` | No | date | Work start date; same formats as `fecha_nacimiento` |
+
+### Minimal example
+
+```csv
+nombre,apellidos,email,rol
+Maria,Lopez Garcia,mlopez@example.com,agremiado
+Juan,Perez Ruiz,,no_agremiado
+```
+
+### Full example
+
+```csv
+nombre,apellidos,email,rol,curp,fecha_nacimiento,direccion,telefono,categoria,departamento,nss,fecha_ingreso
+Maria,Lopez Garcia,mlopez@example.com,agremiado,LOGM900101MDFPRL09,01/01/1990,Calle Reforma 10,5512345678,Docente,Primaria,12345678901,15/08/2015
+Juan,Perez Ruiz,,no_agremiado,,,,,,,,
+```
+
+---
+
+## What happens during import
+
+<Steps>
+  <Step title="CSV is opened with League\Csv\Reader">
+    `Reader::createFromPath($path)` opens the file. `setHeaderOffset(0)` tells the reader that the first row is the header, so every record is keyed by column name.
+  </Step>
+  <Step title="Each row is normalised">
+    `normalizeNullable()` trims whitespace and converts empty strings to `null`. `parseDate()` tries four date formats in order: `d/m/Y H:i`, `d/m/Y`, `Y-m-d H:i:s`, `Y-m-d`. `parseRole()` calls `RoleEnum::tryFrom(strtolower($value))` and falls back to `RoleEnum::NoAgremiado` on no match.
+  </Step>
+  <Step title="Fallback email generated if missing">
+    When `email` is blank the command builds `firstname.surnames.rowNumber@import.local`. The string is transliterated to ASCII (`iconv UTF-8 → ASCII//TRANSLIT//IGNORE`), lowercased, and non-alphanumeric characters are replaced with dots.
+  </Step>
+  <Step title="CreateUserUseCase::execute() called">
+    A `CreateUser` DTO is constructed and passed to `CreateUserUseCase::execute()`. The use case hashes the password with bcrypt and inserts the row into `users`. A `salary` of `0.0` and a `null` photo are always set.
+  </Step>
+  <Step title="Duplicate detection">
+    If a user with the same email already exists, `execute()` returns `false`. The command counts this as **skipped** and prints `Omitido (email duplicado): {email}`. The existing record is not modified.
+  </Step>
+  <Step title="Summary printed">
+    After all rows are processed the command prints a summary:
+
+    ```
+    Resumen de importacion
+    - Importados: 42
+    - Omitidos: 3
+    - Errores: 1
+    ```
+
+    The exit code is `0` if there were no errors, `1` if any row threw an exception.
+  </Step>
+</Steps>
+
+---
+
+## Error handling
+
+- **Missing `nombre` or `apellidos`** — the row throws `InvalidArgumentException` and is counted as an error; processing continues with the next row.
+- **CSV file unreadable or malformed** — `League\Csv\Exception` is caught at the outer level and the entire command exits with code `1`.
+- **Database error on a row** — the `Throwable` is caught per-row; the error message is printed and the import continues.
+- **Unknown role value** — silently falls back to `RoleEnum::NoAgremiado`; this is **not** counted as an error.
+
+---
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | All processed rows succeeded (skipped rows do not count as errors) |
+| `1` | At least one row error, unreadable file, or unexpected exception |

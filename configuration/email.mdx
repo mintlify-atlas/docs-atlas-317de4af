@@ -1,0 +1,130 @@
+---
+title: "Email configuration"
+description: "Configure PHPMailer SMTP settings for transactional email and admin notifications in SIUT-ITSM."
+---
+
+SIUT-ITSM uses [PHPMailer](https://github.com/PHPMailer/PHPMailer) (v6.10+) to send transactional email. PHPMailer is configured entirely through environment variables — no code changes are needed to switch between mail providers.
+
+Email is used for:
+
+- Password recovery links sent to union members
+- Notification emails triggered by member actions
+- Administrative alerts routed to the admin inbox
+
+## Configuration variables
+
+Set the following variables in your `.env` file:
+
+| Variable | Description | Example |
+|----------|-------------|----------|
+| `MAILER_HOST` | SMTP server hostname provided by your mail service or email host. | `smtp.gmail.com` |
+| `MAILER_USER` | SMTP authentication username. Usually the sending email address. | `noreply@yourorg.org` |
+| `MAILER_PASSWORD` | SMTP password or app-specific password for `MAILER_USER`. | `app_specific_password` |
+| `MAILER_PORT` | SMTP port. Use `465` for implicit SSL, `587` for STARTTLS. Defaults to `465`. | `465` |
+| `MAILER_FROM_ADDRESS` | The `From:` header email address for all outgoing messages. | `noreply@yourorg.org` |
+| `MAILER_FROM_NAME` | The `From:` header display name for all outgoing messages. | `SIUTITSM` |
+| `MAILER_ADMIN_NOTIFICATIONS` | Recipient address for administrative notification emails. Separate from `MAILER_FROM_ADDRESS`. | `admin@yourorg.org` |
+
+## How PHPMailer is initialised
+
+Values are injected from `.env` into a `MailerConfig` object in `config/settings.php`:
+
+```php
+new MailerConfig(
+    host:               (string) $env->get("MAILER_HOST"),
+    user:               (string) $env->get("MAILER_USER"),
+    password:           (string) $env->get("MAILER_PASSWORD"),
+    port:               (int) $env->get("MAILER_PORT", 465),
+    fromAddress:        (string) $env->get("MAILER_FROM_ADDRESS"),
+    fromName:           (string) $env->get("MAILER_FROM_NAME"),
+    adminNotifications: (string) $env->get("MAILER_ADMIN_NOTIFICATIONS"),
+    charset:            "UTF-8",
+)
+```
+
+The `charset` is always `UTF-8` and is not configurable via the environment.
+
+## Example SMTP configurations
+
+<Tabs>
+  <Tab title="Gmail">
+    Use an [app-specific password](https://support.google.com/accounts/answer/185833) — not your Google account password. Two-factor authentication must be enabled on the Google account.
+
+    ```env
+    MAILER_HOST=smtp.gmail.com
+    MAILER_USER=youraddress@gmail.com
+    MAILER_PASSWORD=xxxx_xxxx_xxxx_xxxx
+    MAILER_PORT=465
+    MAILER_FROM_ADDRESS=youraddress@gmail.com
+    MAILER_FROM_NAME=SIUTITSM
+    MAILER_ADMIN_NOTIFICATIONS=admin@yourorg.org
+    ```
+  </Tab>
+
+  <Tab title="Brevo (Sendinblue)">
+    Brevo provides a free SMTP tier suitable for low-volume transactional email.
+
+    ```env
+    MAILER_HOST=smtp-relay.brevo.com
+    MAILER_USER=your_brevo_login@example.com
+    MAILER_PASSWORD=your_brevo_smtp_key
+    MAILER_PORT=465
+    MAILER_FROM_ADDRESS=noreply@yourorg.org
+    MAILER_FROM_NAME=SIUTITSM
+    MAILER_ADMIN_NOTIFICATIONS=admin@yourorg.org
+    ```
+  </Tab>
+
+  <Tab title="Generic SMTP">
+    Any SMTP-compatible provider works. Adjust host, port, and credentials accordingly.
+
+    ```env
+    MAILER_HOST=mail.yourprovider.com
+    MAILER_USER=noreply@yourorg.org
+    MAILER_PASSWORD=smtp_password
+    MAILER_PORT=587
+    MAILER_FROM_ADDRESS=noreply@yourorg.org
+    MAILER_FROM_NAME=SIUTITSM
+    MAILER_ADMIN_NOTIFICATIONS=admin@yourorg.org
+    ```
+
+    <Note>
+      Port `587` uses STARTTLS. Port `465` uses implicit SSL (SMTPS). Both are supported by PHPMailer. Check your provider's documentation to confirm which port and encryption method they require.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Admin notifications
+
+`MAILER_ADMIN_NOTIFICATIONS` is a dedicated recipient address for system-level alerts. It is read separately from the `From:` address, allowing you to:
+
+- Send from a no-reply address (`MAILER_FROM_ADDRESS`) while routing admin alerts to a monitored inbox (`MAILER_ADMIN_NOTIFICATIONS`).
+- Set the admin address to a distribution list or ticketing system inbox.
+
+Example where the sending address and admin inbox differ:
+
+```env
+MAILER_FROM_ADDRESS=noreply@sindicato.itsm.edu.mx
+MAILER_FROM_NAME=SIUTITSM
+MAILER_ADMIN_NOTIFICATIONS=soporte@sindicato.itsm.edu.mx
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Emails are not being sent">
+    - Confirm `MAILER_HOST`, `MAILER_USER`, and `MAILER_PASSWORD` are correct.
+    - Check that the SMTP port is not blocked by a firewall. Port `465` and `587` are commonly blocked on shared hosting and cloud VMs (AWS, GCP, Azure).
+    - Review the application log (Monolog) for PHPMailer exceptions — error details are written there.
+  </Accordion>
+
+  <Accordion title="Authentication failed">
+    - For Gmail, ensure you are using an app-specific password, not your Google account password.
+    - Confirm the `MAILER_USER` value matches the authenticated account exactly (including domain).
+  </Accordion>
+
+  <Accordion title="Emails arrive but display incorrectly">
+    - PHPMailer always uses `UTF-8` charset. If characters appear garbled, check that your mail client is interpreting the message as UTF-8.
+    - Verify `MAILER_FROM_NAME` does not contain special characters that require MIME encoding — plain ASCII names are safest.
+  </Accordion>
+</AccordionGroup>

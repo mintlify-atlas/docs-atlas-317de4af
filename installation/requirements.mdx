@@ -1,0 +1,132 @@
+---
+title: "Requirements"
+description: "Software and system prerequisites for running SIUT-ITSM."
+---
+
+Before installing SIUT-ITSM, make sure your environment satisfies the following requirements.
+
+## PHP
+
+<Note>
+  SIUT-ITSM requires **PHP 8.3 or higher**. The `composer.json` constraint is `"php": "^8.3"`. Earlier versions of PHP are not supported.
+</Note>
+
+Verify your PHP version:
+
+```bash
+php -v
+```
+
+Expected output:
+
+```
+PHP 8.3.x (cli) ...
+```
+
+### Required PHP extensions
+
+The following extensions must be enabled in your PHP installation:
+
+| Extension | Purpose |
+|-----------|----------|
+| `pdo` | Database abstraction layer used for all MySQL queries |
+| `pdo_mysql` | PDO driver for MySQL and MariaDB connections |
+| `intl` | Internationalisation support (date formatting, locale handling) |
+| `zip` | Archive handling for file uploads and exports |
+| `gd` | Image processing for photos and generated assets |
+
+Check that all required extensions are loaded:
+
+```bash
+php -m | grep -E 'pdo|intl|zip|gd'
+```
+
+On Debian/Ubuntu-based systems you can install missing extensions with:
+
+```bash
+sudo apt-get install php8.3-pdo php8.3-mysql php8.3-intl php8.3-zip php8.3-gd
+```
+
+On RHEL/Fedora-based systems:
+
+```bash
+sudo dnf install php8.3-pdo php8.3-mysqlnd php8.3-intl php8.3-zip php8.3-gd
+```
+
+## Composer
+
+Composer 2.x is required to install and manage PHP dependencies.
+
+```bash
+composer -V
+```
+
+If Composer is not installed, follow the official instructions at [getcomposer.org](https://getcomposer.org/download/).
+
+## Web server
+
+<Tabs>
+  <Tab title="PHP built-in server (development)">
+    For local development, PHP's built-in server is the simplest option. No additional installation is needed.
+
+    ```bash
+    php -S localhost:8888 -t .
+    # or via the Composer script:
+    composer run servidor
+    ```
+
+    <Warning>
+      The PHP built-in server is single-threaded and not suitable for production use. Use Apache or Nginx in any environment accessed by multiple users.
+    </Warning>
+  </Tab>
+
+  <Tab title="Apache">
+    Apache 2.4+ with `mod_rewrite` enabled is the recommended production web server. The Docker image uses `php:8.3-apache` and enables `mod_rewrite` automatically.
+
+    Required modules:
+    - `mod_rewrite` — URL rewriting for clean routes
+    - `mod_php` or PHP-FPM via `mod_proxy_fcgi`
+
+    Enable `mod_rewrite` on Debian/Ubuntu:
+
+    ```bash
+    sudo a2enmod rewrite
+    sudo systemctl restart apache2
+    ```
+  </Tab>
+
+  <Tab title="Nginx">
+    Nginx with PHP-FPM is a supported alternative for production deployments.
+
+    Required:
+    - Nginx 1.18+
+    - PHP-FPM 8.3 configured to match your PHP installation
+  </Tab>
+</Tabs>
+
+## Database
+
+SIUT-ITSM requires a relational database compatible with MySQL syntax.
+
+| Option | Minimum version | Notes |
+|--------|----------------|-------|
+| MySQL | 8.0+ | Recommended. The Docker Compose setup uses `mysql:8.0`. |
+| MariaDB | 10.6+ | Fully compatible with the schema and all SQL files. |
+
+The database schema uses:
+- `utf8mb4` character set and `utf8mb4_unicode_ci` collation
+- `AUTO_INCREMENT` primary keys
+- Foreign key constraints
+- `DATETIME` and `DECIMAL` column types
+
+<Info>
+  The Docker Compose file starts MySQL with `--default-authentication-plugin=mysql_native_password` and `--character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci` to ensure compatibility.
+</Info>
+
+## Summary checklist
+
+- [ ] PHP 8.3 or higher installed
+- [ ] PHP extensions enabled: `pdo`, `pdo_mysql`, `intl`, `zip`, `gd`
+- [ ] Composer 2.x installed
+- [ ] Web server available (PHP built-in, Apache, or Nginx)
+- [ ] MySQL 8.0+ or MariaDB 10.6+ running and accessible

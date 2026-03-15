@@ -1,0 +1,108 @@
+---
+title: "Environment variables"
+description: "Complete reference for all environment variables in SIUT-ITSM's .env file."
+---
+
+All runtime configuration is provided through a `.env` file in the project root. Copy `.env.example` to `.env` and fill in the values for your environment.
+
+```bash
+cp .env.example .env
+```
+
+The application loads variables at startup using [vlucas/phpdotenv](https://github.com/vlucas/phpdotenv). Values are read in `config/settings.php` and injected into the DI container via `AppConfig`, `DatabaseConfig`, `MailerConfig`, and `SessionConfig` objects.
+
+<Note>
+  No `.env` file is included in the repository — only `.env.example`. Never commit your `.env` file to version control, as it contains database credentials and SMTP passwords.
+</Note>
+
+## Database
+
+These variables configure the PDO connection to MySQL or MariaDB. All five are required — the application will throw an exception on startup if any are missing.
+
+| Variable | Description | Example |
+|----------|-------------|----------|
+| `DB_HOST` | Hostname or IP address of the database server. Use `db` when running under Docker Compose. | `localhost` |
+| `DB_NAME` | Name of the MySQL/MariaDB database to connect to. | `siut_itsm` |
+| `DB_USER` | Database user with read/write access to `DB_NAME`. | `siut_user` |
+| `DB_PASSWORD` | Password for `DB_USER`. | `strong_password` |
+| `DB_PORT` | TCP port the database server listens on. Defaults to `3306` if omitted. | `3306` |
+
+Example database block:
+
+```env
+DB_HOST=localhost
+DB_NAME=siut_itsm
+DB_USER=siut_user
+DB_PASSWORD=strong_password
+DB_PORT=3306
+```
+
+## Mailer
+
+These variables configure the PHPMailer SMTP connection used for password recovery, user notifications, and admin alerts. All are required when email functionality is active.
+
+| Variable | Description | Example |
+|----------|-------------|----------|
+| `MAILER_HOST` | Hostname of the SMTP server. | `smtp.example.com` |
+| `MAILER_USER` | SMTP authentication username (usually an email address). | `noreply@yourorg.org` |
+| `MAILER_PASSWORD` | SMTP authentication password or app-specific password. | `smtp_app_password` |
+| `MAILER_PORT` | SMTP port. Use `465` for SSL, `587` for STARTTLS. Defaults to `465` if omitted. | `465` |
+| `MAILER_FROM_ADDRESS` | The `From:` email address on outgoing messages. | `noreply@yourorg.org` |
+| `MAILER_FROM_NAME` | The `From:` display name on outgoing messages. | `SIUTITSM` |
+| `MAILER_ADMIN_NOTIFICATIONS` | Email address that receives administrative notification emails (e.g. new user registrations, system alerts). | `admin@yourorg.org` |
+
+Example mailer block:
+
+```env
+MAILER_HOST=smtp.gmail.com
+MAILER_USER=noreply@yourorg.org
+MAILER_PASSWORD=app_specific_password
+MAILER_PORT=465
+MAILER_FROM_ADDRESS=noreply@yourorg.org
+MAILER_FROM_NAME=SIUTITSM
+MAILER_ADMIN_NOTIFICATIONS=admin@yourorg.org
+```
+
+## Application
+
+These variables control general application behaviour.
+
+| Variable | Description | Example |
+|----------|-------------|----------|
+| `APP_ENV` | Application environment. Use `dev` for local development (enables debug mode, disables secure cookies). Use `prod` for all other environments. | `prod` |
+| `BASE_URL` | The full base URL of the application, without a trailing slash. Used to build absolute links in emails and redirects. | `https://sindicato.itsm.edu.mx` |
+
+Example application block:
+
+```env
+APP_ENV=prod
+BASE_URL=https://sindicato.itsm.edu.mx
+```
+
+<Warning>
+  Setting `APP_ENV=dev` in production disables the `Secure` flag on session cookies, which allows session cookies to be transmitted over plain HTTP. Always use `APP_ENV=prod` on any internet-facing server.
+</Warning>
+
+## Full .env.example
+
+The complete example file shipped with the repository:
+
+```env
+DB_HOST=localhost
+DB_NAME=database_name
+DB_USER=username
+DB_PASSWORD=password
+DB_PORT=3306
+
+MAILER_HOST=smtp.example.com
+MAILER_USER=example@mail.com
+MAILER_PASSWORD=password
+MAILER_PORT=465
+MAILER_FROM_ADDRESS=example@mail.com
+MAILER_FROM_NAME=SIUTITSM
+MAILER_ADMIN_NOTIFICATIONS=admin@mail.com
+
+APP_ENV=dev
+
+BASE_URL=http://localhost
+```

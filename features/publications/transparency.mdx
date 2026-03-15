@@ -1,0 +1,87 @@
+---
+title: Transparency module
+description: Public-facing transparency page linking to regulatory bodies and providing a channel for members to submit transparency questions.
+---
+
+The Transparency module fulfills the union's obligation to publish normative references and provide a contact channel for members and the public who have questions about union finances, governance, and legal compliance.
+
+## Public transparency page
+
+The transparency page is served at `/transparencia.php`. It is a fully public, unauthenticated page rendered from the `transparencia.latte` template inside the main landing layout.
+
+The page is divided into two main sections:
+
+### Normative links (Vínculos Normativos)
+
+This section displays logos and links to two official external transparency bodies:
+
+- **ITAIP** — Instituto de Transparencia y Acceso a la Información Pública del Estado de Tabasco (`http://www.itaip.org.mx/site/`)
+- **Plataforma Nacional de Transparencia** (`https://www.plataformadetransparencia.org.mx/`)
+
+Both links open in a new tab with `rel="noopener noreferrer"`.
+
+### Contact for queries (Contacto para Consultas)
+
+A contact block directs members with transparency questions to:
+
+- Email: `Sindicato_SIUTITSM@outlook.com`
+- Phone: `936 106 61 69`
+
+<Info>
+The Vínculos Normativos section currently contains a placeholder paragraph. Administrators can update the normative text directly in the `transparencia.latte` template.
+</Info>
+
+## Transparency doubts inbox (portal)
+
+The portal section at `/portal/transparencia/` provides an admin interface for reviewing questions submitted through the public transparency contact channel.
+
+### Doubts list — `/portal/transparencia/dudas.php`
+
+This page queries the `dudas_transparencia` table directly:
+
+```sql
+SELECT id, nombre, duda, correo, fecha
+FROM dudas_transparencia
+ORDER BY fecha DESC
+```
+
+The results are displayed in a filterable, paginated table with the following columns:
+
+| Column | Description |
+|---|---|
+| `nombre` | Full name of the person who submitted the query |
+| `fecha` | Submission date and time |
+| `correo` | Contact email address |
+| `duda` | The question text (truncated in the list view) |
+
+Admins can filter the table client-side by:
+- **Date range** (Desde / Hasta)
+- **Name** (partial text match)
+- **Question keyword** (partial text match)
+
+The table paginates at 10 rows per page.
+
+### Doubt detail — `/portal/transparencia/dudas-detalles.php`
+
+Each row in the doubts list links to a detail page (`?id={id}`) that shows the full question text and all contact information for that submission.
+
+## How admins upload transparency documents
+
+The current version of the transparency module does not include a dedicated document upload interface within the SIUT-ITSM portal. Document management for transparency reports is handled by:
+
+1. Uploading files directly to the server's public uploads directory.
+2. Adding links or references to those documents inside the `transparencia.latte` template.
+
+<Note>
+Future iterations may introduce a structured document repository for transparency reports similar to the Publications module. Track the `Repositorios` section of the portal (`/portal/repositorios/`) for related functionality.
+</Note>
+
+## Roles and access
+
+| Area | Access |
+|---|---|
+| `/transparencia.php` | Public — no authentication required |
+| `/portal/transparencia/dudas.php` | Portal authentication required |
+| `/portal/transparencia/dudas-detalles.php` | Portal authentication required |
+
+The portal transparency pages do not enforce a specific role beyond authentication. Access restriction for sensitive roles should be configured at the middleware level if needed.

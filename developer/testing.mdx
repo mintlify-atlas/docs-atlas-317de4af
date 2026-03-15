@@ -1,0 +1,240 @@
+---
+title: "Testing"
+description: "Running the Pest test suite, test structure, and how to write new unit tests for SIUT-ITSM."
+---
+
+## Overview
+
+SIUT-ITSM uses [Pest](https://pestphp.com/) 4.x as its test runner, which provides an expressive functional API on top of PHPUnit. [FakerPHP](https://fakerphp.org/) is available as a dev dependency for generating realistic test data.
+
+| Dependency | Version | Purpose |
+|---|---|---|
+| `pestphp/pest` | ^4.4 | Test runner and assertion API |
+| `fakerphp/faker` | ^1.24 | Test data generation |
+
+---
+
+## Running tests
+
+```bash
+# Run the full test suite
+vendor/bin/pest
+
+# Run with coverage output (requires Xdebug or PCOV)
+vendor/bin/pest --coverage
+
+# Run a specific test file
+vendor/bin/pest tests/Unit/Shared/DocumentHelperTest.php
+
+# Run tests matching a description
+vendor/bin/pest --filter "returns null when there is no authenticated user"
+```
+
+<Tip>
+  Pest discovers all files ending in `Test.php` under `./tests` (configured by `phpunit.xml`). The `Tests\` namespace maps to `tests/` via Composer's PSR-4 autoloader.
+</Tip>
+
+---
+
+## PHPUnit configuration
+
+`phpunit.xml` at the project root:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true">
+    <testsuites>
+        <testsuite name="Test Suite">
+            <directory suffix="Test.php">./tests</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>app</directory>
+            <directory>src</directory>
+        </include>
+    </source>
+</phpunit>
+```
+
+Key points:
+
+- **Bootstrap:** `vendor/autoload.php` — Composer autoload only, no DI container is started.
+- **Discovery:** All `*Test.php` files inside `./tests`.
+- **Coverage source:** `app/` and `src/` directories are included for coverage analysis.
+- **Colours:** Enabled by default.
+
+---
+
+## Test structure
+
+```
+tests/
+├── Pest.php          # Global Pest configuration and custom expectations
+├── TestCase.php      # Base test case (extends PHPUnit\Framework\TestCase)
+├── Feature/          # Integration/feature tests (currently empty)
+└── Unit/
+    └── Shared/
+        ├── Context/
+        │   └── UserProviderInterfaceTest.php
+        └── DocumentHelperTest.php
+```
+
+`tests/Pest.php` applies the `Tests\TestCase` base class to all tests in the `Feature/` directory:
+
+```php
+pest()->extend(Tests\TestCase::class)->in('Feature');
+```
+
+Unit tests in `Unit/` extend no base class and use pure Pest functions.
+
+---
+
+## Existing tests
+
+### UserProviderInterfaceTest
+
+**File:** `tests/Unit/Shared/Context/UserProviderInterfaceTest.php`
+
+Tests the `UserProviderInterface` read-only contract against an in-memory implementation of `UserContextInterface`. The test file defines `InMemoryUserContext` inline — a simple in-memory double that implements both `UserContextInterface` and `UserProviderInterface`.
+
+```php
+it('returns null when there is no authenticated user', function (): void {
+    $context = new InMemoryUserContext();
+    expect(readCurrentUser($context))->toBeNull();
+});
+
+it('returns the authenticated user through the read-only contract', function (): void {
+    $context = new InMemoryUserContext();
+    $user = new AuthenticatedUser(
+        id: 101,
+        name: 'Test User',
+        email: 'test@example.com',
+        role: RoleEnum::Agremiado,
+    );
+    $context->set($user);
+    expect(readCurrentUser($context))->toBe($user);
+});
+
+it('does not cache stale user state through the read-only contract', function (): void {
+    // Tests that forcing a different user returns the updated instance
+});
+```
+
+**Roles used in tests:** `RoleEnum::Agremiado`, `RoleEnum::Admin`, `RoleEnum::Lider`
+
+---
+
+### DocumentHelperTest
+
+**File:** `tests/Unit/Shared/DocumentHelperTest.php`
+
+Tests `App\Shared\Utils\DocumentHelper` — a utility that resolves which document types a user may upload based on their role, and normalises upload paths.
+
+```php
+it('returns only basic documents for no-agremiado', function (): void {
+    $list = DocumentHelper::resolveAllowedDocumentTypes(RoleEnum::NoAgremiado);
+    expect($list)
+        ->toBeArray()
+        ->toHaveCount(3)
+        ->toContain(DocumentTypeEnum::Ine)
+        ->toContain(DocumentTypeEnum::ComprobanteDomicilio)
+        ->toContain(DocumentTypeEnum::Curp);
+});
+
+it('returns full document set for other roles', function (): void {
+    $list = DocumentHelper::resolveAllowedDocumentTypes(RoleEnum::Admin);
+    expect($list)
+        ->toBeArray()
+        ->toHaveCount(5)
+        ->toContain(DocumentTypeEnum::Afiliacion)
+        ->toContain(DocumentTypeEnum::ComprobantePago);
+});
+
+it('builds document fields with labels', function (): void {
+    $fields = DocumentHelper::resolveDocumentFieldsByRole(RoleEnum::NoAgremiado);
+    expect($fields[0])->toHaveKey('key')->toHaveKey('label');
+});
+
+it('normalizes upload path (trims and strips prefix)', function (): void {
+    expect(DocumentHelper::normalizeUploadPath(null))->toBe('');
+    expect(DocumentHelper::normalizeUploadPath('/uploads/foo/bar.pdf'))->toBe('foo/bar.pdf');
+});
+
+it('allows admins and leaders to view other users', function (): void {
+    expect(DocumentHelper::canViewOtherUserDocuments(RoleEnum::Admin))->toBeTrue();
+    expect(DocumentHelper::canViewOtherUserDocuments(RoleEnum::Agremiado))->toBeFalse();
+});
+```
+
+---
+
+## Writing new tests
+
+### Unit test (no container)
+
+Create a file in `tests/Unit/` with a `Test.php` suffix. Import the class under test directly — no bootstrap is needed beyond Composer autoload.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+use App\Modules\Loan\Application\Service\CalculadoraSimpleAleman;
+
+it('calculates the correct fixed principal instalment', function (): void {
+    $calc = new CalculadoraSimpleAleman();
+    // ...
+    expect($result->principal)->toBe(1000.0);
+});
+```
+
+### Feature test (with container)
+
+Feature tests in `tests/Feature/` extend `Tests\TestCase` (which extends `PHPUnit\Framework\TestCase`). For integration-level tests that need PDO, use `App\Infrastructure\Persistence\TestTransactionManager` to wrap each test in a transaction that rolls back on teardown.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+use App\Bootstrap;
+
+beforeEach(function (): void {
+    $this->container = Bootstrap::buildContainer();
+});
+
+it('creates a user and finds it by email', function (): void {
+    // ...
+});
+```
+
+### Generating fake data with Faker
+
+```php
+use Faker\Factory;
+
+$faker = Factory::create('es_MX'); // Mexican locale
+
+$name     = $faker->firstName();
+$surnames = $faker->lastName() . ' ' . $faker->lastName();
+$curp     = strtoupper($faker->bothify('################??'));
+$email    = $faker->safeEmail();
+```
+
+---
+
+## Custom Pest expectation
+
+`tests/Pest.php` registers one custom expectation:
+
+```php
+expect()->extend('toBeOne', function () {
+    return $this->toBe(1);
+});
+```
+
+This can be used as `expect($value)->toBeOne()` in any test.
