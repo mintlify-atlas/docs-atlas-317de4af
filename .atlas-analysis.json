@@ -1,0 +1,103 @@
+{
+  "projectType": "saas",
+  "projectName": "SIUT-ITSM",
+  "projectDescription": "Official web platform for the Sindicato Único de Trabajadores del Instituto Tecnológico Superior de Macuspana, providing union members with access to information, loan management, documents, and administrative tools.",
+  "theme": "linden",
+  "primaryColor": "#1E3A5F",
+  "lightColor": "#E8EEF5",
+  "darkColor": "#0F1E30",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Getting Started",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Installation",
+            "pages": ["installation/requirements", "installation/setup", "installation/docker"]
+          },
+          {
+            "group": "Configuration",
+            "pages": ["configuration/environment", "configuration/database", "configuration/email"]
+          }
+        ]
+      },
+      {
+        "tab": "Features",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": ["features/auth/login", "features/auth/password-recovery", "features/auth/roles"]
+          },
+          {
+            "group": "Loans",
+            "pages": ["features/loans/overview", "features/loans/simulator", "features/loans/apply", "features/loans/amortization"]
+          },
+          {
+            "group": "Users",
+            "pages": ["features/users/management", "features/users/documents", "features/users/profiles"]
+          },
+          {
+            "group": "Publications",
+            "pages": ["features/publications/overview", "features/publications/transparency"]
+          },
+          {
+            "group": "Messaging",
+            "pages": ["features/messaging/inbox"]
+          },
+          {
+            "group": "Settings",
+            "pages": ["features/settings/general"]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Architecture",
+            "pages": ["developer/architecture", "developer/modules", "developer/database-schema"]
+          },
+          {
+            "group": "CLI Commands",
+            "pages": ["developer/cli/import-users", "developer/cli/import-addresses", "developer/cli/minify"]
+          },
+          {
+            "group": "Testing",
+            "pages": ["developer/testing"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Role-based access control (agremiado, líder, finanzas, admin)",
+    "Full loan lifecycle management with amortization tables",
+    "Loan simulator with interest calculation",
+    "PDF document generation (promissory notes, member credentials)",
+    "Email notifications via PHPMailer (password recovery, alerts)",
+    "Publications and transparency module for union documents",
+    "User document management and validation workflow",
+    "Internal messaging / buzón system",
+    "CSV import for users and addresses",
+    "Containerized deployment with Docker"
+  ],
+  "publicApiSurface": [
+    "LoginUseCase",
+    "LogoutUseCase",
+    "PasswordResetUseCase",
+    "ChangePasswordWithTokenUseCase",
+    "RecoverPasswordWithMagicLinkUseCase",
+    "CreateUserUseCase",
+    "LoanSimulator (Loan\\Domain\\Service)",
+    "Loan entity (folio, status workflow, amortization)",
+    "Publication entity",
+    "commands/importar-usuarios.php",
+    "commands/importar-direcciones.php",
+    "composer run servidor",
+    "composer run minificar"
+  ]
+}
